@@ -9,6 +9,7 @@ CLI tool for managing NixOS configuration.
 ## Requirements
 
 - **Zig 0.16.0** or later
+- **Nix** (for nix-shell, kcov)
 
 ## Installation
 
@@ -49,30 +50,39 @@ Add to flake:
 }
 ```
 
-## Taskfile
+## Build Commands
 
-Build tasks via `./taskfile`:
+All tasks via `zig build`:
 
-| Task | Description |
+| Command | Description |
 |---|---|
-| `./taskfile build` | Compile project |
-| `./taskfile run` | Execute binary |
-| `./taskfile test` | Run test suite |
-| `./taskfile coverage` | Run tests + kcov (100% line coverage) |
-| `./taskfile fmt` | Format Zig sources |
-| `./taskfile clean` | Remove build artifacts |
-| `./taskfile` | Show help |
+| `zig build` | Compile project |
+| `zig build run` | Build and run |
+| `zig build test --summary all` | Run test suite |
+| `zig build coverage` | Run tests under kcov, print line coverage |
+| `zig build docs` | Generate autodoc HTML |
+| `zig build docs:serve` | Build docs + serve at `localhost:8000` |
+| `zig build fmt` | Not available — use `zig fmt src/` directly |
 
 ## Coverage
 
-100% line coverage enforced via **kcov**:
+100% line coverage via **kcov**:
 
 ```sh
-./taskfile coverage
-# ✓ coverage: 100.00% (305/305 lines)
+zig build coverage
+# 100.0% (423/423 lines)
 ```
 
 Tests run with LLVM backend (`.use_llvm = true`) for accurate DWARF instrumentation.
+
+## Documentation
+
+```sh
+zig build docs          # generate to zig-out/docs/
+zig build docs:serve    # build + serve at http://localhost:8000
+```
+
+Autodoc uses `///` (declarations) and `//!` (module-level) comments. No doc comments inside function bodies — use `//` there.
 
 ## Usage
 
@@ -87,6 +97,23 @@ Tests run with LLVM backend (`.use_llvm = true`) for accurate DWARF instrumentat
  -d : set diff to true (default is false)
  -h, help : Display this help message
  -v, version : Display the current version
+```
+
+## Project Structure
+
+```
+build.zig            Build configuration
+build/coverage.zig   kcov JSON parser (Zig)
+build/serve.zig      Static HTTP server for autodoc (Zig)
+src/main.zig         Entry point, allocator setup
+src/app/init.zig     CLI flag parsing, app dispatch
+src/app/cli.zig      Command building, execution pipeline
+src/app/config.zig   Config struct with defaults + validation
+src/core/commands.zig Shell command string builders
+src/core/io.zig      Formatted output + ANSI style constants
+src/core/process.zig  Shell process runner
+src/core/ui.zig      Terminal UI: titles, help, prompts
+src/core/static_allocator.zig Two-phase allocator (init → static → deinit)
 ```
 
 ## License
