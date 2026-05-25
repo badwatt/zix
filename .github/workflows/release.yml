@@ -57,7 +57,7 @@ jobs:
     if: needs.tag.outputs.created == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           ref: ${{ needs.tag.outputs.version }}
@@ -68,11 +68,11 @@ jobs:
           echo "prev=$PREV" >> $GITHUB_OUTPUT
       - name: Build Changelog
         id: build_changelog
-        uses: mikepenz/release-changelog-builder-action@v4
+        uses: mikepenz/release-changelog-builder-action@v6
         with:
           fromTag: ${{ steps.prev.outputs.prev }}
           toTag: ${{ needs.tag.outputs.version }}
-          commitMode: true
+          mode: "COMMIT"
           configurationJson: |
             {
               "pr_template": "- #{{TITLE}}",
@@ -121,11 +121,13 @@ jobs:
               "label_extractor": [
                 {
                   "pattern": ".*!.*|^breaking:.*",
-                  "target": "breaking"
+                  "target": "breaking",
+                  "on_property": "title"
                 },
                 {
                   "pattern": "^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test){1}(\\([\\w\\-\\.]+\\))?(: ([\\w ])+([\\s\\S]*))?",
-                  "target": "$1"
+                  "target": "$1",
+                  "on_property": "title"
                 }
               ]
             }
