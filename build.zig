@@ -31,9 +31,9 @@ pub fn build(b: *std.Build) void {
 
     addExe(b, mod);
     addTest(b, mod);
-    addDocs(b, mod);
+    const docs_install = addDocs(b, mod);
     addCoverage(b, mod, target, optimize);
-    addDocsServe(b, target, optimize);
+    addDocsServe(b, target, optimize, docs_install);
 }
 
 /// Builds and installs the zix executable. Adds `run` step.
@@ -101,7 +101,7 @@ fn addCoverage(b: *std.Build, mod: *std.Build.Module, target: std.Build.Resolved
 }
 
 /// Adds `docs` step: builds autodoc and installs to zig-out/docs/.
-fn addDocs(b: *std.Build, mod: *std.Build.Module) void {
+fn addDocs(b: *std.Build, mod: *std.Build.Module) *std.Build.Step {
     const compile = b.addTest(.{
         .name = "zix-docs",
         .root_module = mod,
@@ -112,11 +112,12 @@ fn addDocs(b: *std.Build, mod: *std.Build.Module) void {
         .install_subdir = "docs",
     });
     b.step("docs", "Build documentation").dependOn(&install.step);
+    return &install.step;
 }
 
 /// Adds `docs:serve` step: builds docs then starts a local HTTP server.
 /// The server reads files from the installed docs directory.
-fn addDocsServe(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
+fn addDocsServe(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, docs_install: *std.Build.Step) void {
     const serve_mod = b.createModule(.{
         .root_source_file = b.path("build/serve.zig"),
         .target = target,
@@ -129,7 +130,8 @@ fn addDocsServe(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.b
 
     const serve_cmd = b.addRunArtifact(serve_exe);
     serve_cmd.addArg(b.pathJoin(&.{ b.install_path, "docs" }));
-    serve_cmd.step.dependOn(b.getInstallStep());
+
+    serve_cmd.step.dependOn(docs_install);
 
     b.step("docs:serve", "Build docs and serve at localhost:8000").dependOn(&serve_cmd.step);
 }
