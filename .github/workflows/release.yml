@@ -15,7 +15,7 @@ jobs:
       version: ${{ steps.extract.outputs.version }}
       created: ${{ steps.extract.outputs.created }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - id: extract
@@ -42,7 +42,7 @@ jobs:
         target: [x86_64-linux]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ needs.tag.outputs.version }}
       - uses: mlugg/setup-zig@v2
@@ -140,3 +140,4 @@ jobs:
           tag_name: ${{ needs.tag.outputs.version }}
           files: artifacts/**/zix
           body: ${{ steps.build_changelog.outputs.changelog }}
+
