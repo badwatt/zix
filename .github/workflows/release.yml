@@ -47,7 +47,7 @@ jobs:
           ref: ${{ needs.tag.outputs.version }}
       - uses: mlugg/setup-zig@v2
       - run: zig build -Doptimize=ReleaseSafe -Dtarget=${{ matrix.target }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: zix-${{ matrix.target }}
           path: zig-out/bin/zix
@@ -131,7 +131,7 @@ jobs:
             }
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
           pattern: zix-*
@@ -140,4 +140,3 @@ jobs:
           tag_name: ${{ needs.tag.outputs.version }}
           files: artifacts/**/zix
           body: ${{ steps.build_changelog.outputs.changelog }}
-
