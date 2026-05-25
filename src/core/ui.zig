@@ -1,18 +1,21 @@
+//! Terminal UI functions: titles, help, version, config display, and confirmation prompts.
+//!
+//! All output uses `io.printTo` for immediate flush. `confirm` reads
+//! stdin byte-by-byte via posix.read to avoid buffering issues.
+
 const std = @import("std");
 const io = @import("io.zig");
 const equal = std.mem.eql;
 
-// --- Title ---
-
-// Maximum title text length for border generation.
+/// Maximum border width for printed titles.
 const MAX_TITLE_LEN: u32 = 128;
 
+/// Prints a bordered, colored title with asterisk borders.
+/// Asserts text is non-empty and fits within MAX_TITLE_LEN.
 pub fn printTitle(writer: *std.Io.Writer, text: []const u8) !void {
-    // Assert preconditions: text must not be empty, must fit in static buffer.
     std.debug.assert(text.len > 0);
     std.debug.assert(text.len + 4 <= MAX_TITLE_LEN);
 
-    // Stack-allocated border buffer. No dynamic allocation.
     var border_buf: [MAX_TITLE_LEN]u8 = undefined;
     const border = border_buf[0 .. text.len + 4];
     for (border) |*c| {
@@ -25,11 +28,8 @@ pub fn printTitle(writer: *std.Io.Writer, text: []const u8) !void {
     );
 }
 
-// --- Help / Version ---
-
+/// Prints the CLI help text with flag descriptions.
 pub fn printHelp(writer: *std.Io.Writer) !void {
-    // WHY: help text is a static constant — no arguments to validate.
-    // The invariant is that this function always produces output.
     try io.printTo(writer,
         \\
         \\ *****************************************************
@@ -47,8 +47,9 @@ pub fn printHelp(writer: *std.Io.Writer) !void {
     , .{});
 }
 
+/// Prints the version number with colored formatting.
+/// Asserts version string is non-empty.
 pub fn printVersion(writer: *std.Io.Writer, version: []const u8) !void {
-    // Assert preconditions: version must not be empty.
     std.debug.assert(version.len > 0);
     try io.printTo(
         writer,
@@ -57,15 +58,15 @@ pub fn printVersion(writer: *std.Io.Writer, version: []const u8) !void {
     );
 }
 
-// --- Config Printing ---
-
+/// Prints a single config line: `◉ label = value`. Uses comptime type
+/// detection to format strings vs other types. Suppresses trailing
+/// newline for the last field when `options.new_line` is false.
 fn printConfigLine(
     writer: *std.Io.Writer,
     label: []const u8,
     value: anytype,
     options: struct { new_line: bool = true },
 ) !void {
-    // Assert preconditions: label must not be empty.
     std.debug.assert(label.len > 0);
     const value_fmt = comptime if (@TypeOf(value) == []const u8) "{" ++ "s}" else "{" ++ "}";
     try io.printTo(writer, "{s}◉ {s}{s}{s} = {s}" ++ value_fmt ++ "{s}{s}", .{
@@ -80,8 +81,9 @@ fn printConfigLine(
     });
 }
 
+/// Prints all config fields with colored labels via `printConfigLine`.
+/// The last field omits the trailing newline.
 pub fn configPrint(writer: *std.Io.Writer, config: @import("../app/config.zig").Config) !void {
-    // Assert preconditions: config must have valid fields.
     std.debug.assert(config.repo.len > 0);
     const fields = @typeInfo(@TypeOf(config)).@"struct".fields;
     inline for (fields, 0..) |field, i| {
@@ -91,14 +93,15 @@ pub fn configPrint(writer: *std.Io.Writer, config: @import("../app/config.zig").
     }
 }
 
-// --- Confirm ---
-
+/// Reads a yes/no answer from stdin using raw posix.read.
+/// Shows a prompt with optional message and (Y/n) or (y/N) hint.
+/// Returns true for yes, false for no. Falls back to `default_value`
+/// for empty input.
 pub fn confirm(
     writer: *std.Io.Writer,
     default_value: bool,
     msg: ?[]const u8,
 ) !bool {
-    // If msg is provided, it must not be empty.
     if (msg) |value| std.debug.assert(value.len > 0);
 
     try writeConfirmPrompt(writer, default_value, msg);
@@ -122,14 +125,12 @@ pub fn confirm(
     return false;
 }
 
+/// Writes the confirm prompt with colored (Y/n) or (y/N) hint.
 fn writeConfirmPrompt(
     writer: *std.Io.Writer,
     default_value: bool,
     msg: ?[]const u8,
 ) !void {
-    // If msg is provided, it must not be empty.
-    if (msg) |value| std.debug.assert(value.len > 0);
-
     const hint = if (default_value)
         std.fmt.comptimePrint("{s}(Y/n){s}", .{ io.Green, io.Reset })
     else
@@ -142,34 +143,29 @@ fn writeConfirmPrompt(
     try writer.flush();
 }
 
+/// Parses a yes/no response string. "y"/"yes" → true, "n"/"no" → false.
+/// Empty input falls back to `default_value`. Unknown input defaults to false.
 fn parseConfirmResponse(line: []const u8, default_value: bool) bool {
-    // WHY: "y"/"yes" are affirmative, "n"/"no" are negative.
-    // Empty input falls back to default_value. Everything else defaults to false
-    // to prevent accidental confirmation of destructive operations.
     std.debug.assert(line.len <= 256);
 
-    // Stack-allocated lowercase buffer. No dynamic allocation.
     var lower_buf: [256]u8 = undefined;
     if (line.len > lower_buf.len) return false;
     const lower = std.ascii.lowerString(&lower_buf, line);
 
-    // Positive responses.
     if (equal(u8, lower, "y") or equal(u8, lower, "yes")) return true;
-    // Negative responses.
     if (equal(u8, lower, "n") or equal(u8, lower, "no")) return false;
-    // Empty input uses default.
     if (equal(u8, lower, "") or line.len == 0) return default_value;
-    // Unknown input defaults to false.
     return false;
 }
 
+/// Allocating variant of confirm that reads from a `std.Io.Reader`.
+/// Used in tests where stdin is replaced with a fixed buffer.
 fn confirmAlloc(
     reader: *std.Io.Reader,
     writer: *std.Io.Writer,
     default_value: bool,
     msg: ?[]const u8,
 ) !bool {
-    // If msg is provided, it must not be empty.
     if (msg) |value| std.debug.assert(value.len > 0);
 
     try writeConfirmPrompt(writer, default_value, msg);

@@ -1,9 +1,16 @@
+//! Shell process execution wrapper.
+//!
+//! Spawns commands via `sh -c` with configurable stdout/stderr suppression.
+
 const std = @import("std");
 
+/// Options for process execution. `output` controls whether
+/// stdout and stderr are inherited (true) or suppressed (false).
 pub const RunOpts = struct { output: bool = true };
 
+/// Spawns `sh -c <command>` and returns the exit code.
+/// Asserts command is non-empty. Returns 1 for non-exit terminations.
 pub fn run(io: std.Io, command: []const u8, opts: RunOpts) !i32 {
-    // Assert preconditions: command must not be empty.
     std.debug.assert(command.len > 0);
 
     const shellCommand = [_][]const u8{ "sh", "-c", command };

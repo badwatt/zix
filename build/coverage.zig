@@ -1,5 +1,13 @@
+//! Coverage report parser for kcov JSON output.
+//!
+//! Walks the coverage directory, finds coverage.json, and prints
+//! a summary line: `{percent}% ({covered}/{total} lines)`.
+//! Designed to be built and run as part of `zig build coverage`.
+
 const std = @import("std");
 
+/// Entry point. Reads kcov output directory, parses coverage.json,
+/// and prints percentage summary. Exits 1 if no data found.
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
     const io = init.io;

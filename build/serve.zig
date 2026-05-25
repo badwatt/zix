@@ -1,6 +1,14 @@
+//! Static HTTP file server for Zig autodoc.
+//!
+//! Serves files from a directory over HTTP/1.1 with `Connection: close`.
+//! Supports WASM, JS, HTML, JSON, CSS, SVG, and TAR content types.
+//! Designed to be built and run as part of `zig build docs:serve`.
+
 const std = @import("std");
 const Io = std.Io;
 
+/// Listens on port 8000 and serves files from the directory given as
+/// the first argument. Defaults to current directory if no argument.
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const args = init.minimal.args;
@@ -25,6 +33,9 @@ pub fn main(init: std.process.Init) !void {
     }
 }
 
+/// Reads one HTTP request, resolves the path to a file in `serve_dir`,
+/// and writes the response with appropriate `Content-Type` and
+/// `Connection: close` headers.
 fn handleClient(io: Io, stream: Io.net.Stream, serve_dir: []const u8) !void {
     var rbuf: [8192]u8 = undefined;
     var net_reader = stream.reader(io, &rbuf);
@@ -39,7 +50,7 @@ fn handleClient(io: Io, stream: Io.net.Stream, serve_dir: []const u8) !void {
 
     const request = reader.buffer[reader.seek..reader.end];
 
-    // Parse path from request line
+    // Parse path from request line: "GET /path HTTP/1.1"
     var path_start: usize = 0;
     var path_end: usize = 0;
     for (request, 0..) |c, i| {
@@ -53,12 +64,13 @@ fn handleClient(io: Io, stream: Io.net.Stream, serve_dir: []const u8) !void {
     if (path_start == 0 or path_end == 0) return;
     const raw_path = request[path_start..path_end];
 
-    // Default to index.html
+    // Default to index.html for directory paths
     const path = if (std.mem.endsWith(u8, raw_path, "/") or std.mem.endsWith(u8, raw_path, "/.."))
         "/index.html"
     else
         raw_path;
 
+    // Block path traversal
     if (std.mem.containsAtLeast(u8, path, 1, "../")) {
         respond(io, stream, "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 15\r\n\r\n403 Forbidden");
         return;
@@ -101,6 +113,7 @@ fn handleClient(io: Io, stream: Io.net.Stream, serve_dir: []const u8) !void {
     writer.flush() catch return;
 }
 
+/// Sends a complete HTTP response in one write.
 fn respond(io: Io, stream: Io.net.Stream, msg: []const u8) void {
     var wbuf: [512]u8 = undefined;
     var net_writer = stream.writer(io, &wbuf);

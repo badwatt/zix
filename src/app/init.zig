@@ -1,3 +1,8 @@
+//! Application entry point and argument dispatch for zix.
+//!
+//! Parses CLI flags, validates config, transitions StaticAllocator
+//! from .init to .static, and delegates to `cli.execute`.
+
 const std = @import("std");
 const io = @import("../core/io.zig");
 const ui = @import("../core/ui.zig");
@@ -10,13 +15,16 @@ const Config = @import("config.zig").Config;
 const StaticAllocator = @import("../core/static_allocator.zig");
 const VERSION = @import("zon").version;
 
-/// Result of parsing flags: success, or a specific early-exit action.
+/// Result of argument parsing: continue execution, show help, or show version.
 const ParseResult = enum {
     success,
     help,
     version,
 };
 
+/// Main orchestration function. Parses args, validates config,
+/// transitions allocator to .static, and runs CLI workflow.
+/// Returns error on failure, exits gracefully for help/version.
 pub fn run(
     cli_io: std.Io,
     writer: *std.Io.Writer,
@@ -24,26 +32,21 @@ pub fn run(
     deps: cli_module.Deps,
     static_allocator: *StaticAllocator,
 ) !void {
-    // Assert preconditions: args must not be empty (at least program name).
     std.debug.assert(args.len >= 1);
 
     const allocator = static_allocator.allocator();
 
-    // Hostname buffer must outlive config to avoid dangling pointer.
     var hostname_buf: [std.posix.HOST_NAME_MAX]u8 = undefined;
     var config = Config.defaults(&hostname_buf);
 
-    // No flags: use default config directly.
+    // No args beyond program name — run with defaults.
     if (args.len <= 1) {
-        // Assert: config must have valid defaults with no flags.
         std.debug.assert(config.keep > 0);
         const commands = try buildCommands(config, allocator);
-        // Transition: no more allocation after this point.
         static_allocator.transition_from_init_to_static();
         return try execute(cli_io, writer, config, commands, deps);
     }
 
-    // Parse flags into config. Returns early-exit action for -h/-v.
     const result = parseFlags(args, &config, writer);
     switch (result) {
         .help => return try ui.printHelp(writer),
@@ -51,27 +54,22 @@ pub fn run(
         .success => {},
     }
 
-    // Validate after all flags are parsed so partial configs get caught.
     if (config.validate()) |error_message| {
         return try io.printTo(writer, "{s}Error: {s}{s}\n", .{ io.Red, error_message, io.Reset });
     }
 
-    // Phase 1: build commands (allocation allowed).
     const commands = try buildCommands(config, allocator);
-    // Transition: no more allocation after this point.
     static_allocator.transition_from_init_to_static();
-    // Phase 2: execute (zero allocation).
     return try execute(cli_io, writer, config, commands, deps);
 }
 
-/// Parse command-line flags into config. WHY: extracting flag parsing from
-/// run() keeps run() under 70 lines and separates control flow from state mutation.
+/// Parses CLI flags and subcommands. Mutates config in place.
+/// Returns `.help` or `.version` for early exit, `.success` to continue.
 fn parseFlags(
     args: []const []const u8,
     config: *Config,
     writer: *std.Io.Writer,
 ) ParseResult {
-    // Each arg must be non-empty.
     var arg_index: u32 = 1;
     while (arg_index < args.len) : (arg_index += 1) {
         const arg = args[arg_index];
@@ -84,7 +82,6 @@ fn parseFlags(
                     'd' => config.diff = true,
                     'u' => config.update = true,
                     'r', 'n', 'k' => {
-                        // These flags consume the next argument as their value.
                         arg_index += 1;
                         if (arg_index >= args.len) {
                             _ = io.printTo(
@@ -132,11 +129,11 @@ fn parseFlags(
     return .success;
 }
 
-// --- Test Mocks ---
-
+/// No-op mock for process.run in tests.
 fn mockRun(_: std.Io, _: []const u8, _: process.RunOpts) anyerror!i32 {
     return 0;
 }
+/// Always-yes mock for ui.confirm in tests.
 noinline fn mockConfirm(
     _: *std.Io.Writer,
     _: bool,
@@ -144,10 +141,10 @@ noinline fn mockConfirm(
 ) anyerror!bool {
     return true;
 }
+/// No-op mock for ui.printTitle in tests.
 noinline fn mockPrintTitle(_: *std.Io.Writer, _: []const u8) anyerror!void {}
+/// No-op mock for ui.configPrint in tests.
 noinline fn mockConfigPrint(_: *std.Io.Writer, _: Config) anyerror!void {}
-
-// --- Tests ---
 
 test "run flag branches" {
     const test_io = std.testing.io;
@@ -184,7 +181,6 @@ test "run flag branches" {
     };
 
     for (cases) |tc| {
-        // Reset FBA for each test case to get clean memory.
         fba.reset();
         var static_alloc = StaticAllocator.init(fba.allocator());
         var buf = [_]u8{0} ** 2048;
@@ -232,7 +228,6 @@ test "run rejects invalid config via flags" {
         .configPrint = mockConfigPrint,
     };
 
-    // -k 0 triggers validate error.
     try run(test_io, &writer, &.{ "zix", "-k", "0" }, mock_deps, &static_allocator);
     const out = std.mem.sliceTo(&buf, 0);
     try std.testing.expect(std.mem.indexOf(u8, out, "Error") != null);

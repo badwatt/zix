@@ -1,3 +1,9 @@
+//! Entry point for zix, a NixOS system update CLI.
+//!
+//! Initializes the allocator system, parses CLI arguments, injects
+//! dependencies, and delegates to `app.run`. Uses a two-phase
+//! `StaticAllocator` to enforce zero allocation at runtime.
+
 const std = @import("std");
 const app = @import("app/init.zig");
 const cli = @import("app/cli.zig");
@@ -5,6 +11,9 @@ const ui = @import("core/ui.zig");
 const process = @import("core/process.zig");
 const StaticAllocator = @import("core/static_allocator.zig");
 
+/// Application entry point. Sets up the arena + static allocator,
+/// collects args, wires dependency injection, runs app logic,
+/// and tears down in reverse order.
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
 
@@ -51,6 +60,7 @@ pub fn main(init: std.process.Init) !void {
     static_allocator.transition_from_static_to_deinit_if_static();
 }
 
+// Root test block — imports all module tests for `zig build test`.
 test {
     _ = @import("app/init.zig");
     _ = @import("app/config.zig");

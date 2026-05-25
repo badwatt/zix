@@ -1,37 +1,46 @@
+//! Shell command builders for git and nix operations.
+//!
+//! Each function allocates and returns a shell command string.
+//! All assert preconditions (e.g., non-empty repo paths).
+
 const std = @import("std");
 
+/// Returns `git -C <repo> pull`.
 pub fn gitPull(allocator: std.mem.Allocator, repo: []const u8) ![]const u8 {
-    // Assert preconditions: repo must be a valid path.
     std.debug.assert(repo.len > 0);
     return std.fmt.allocPrint(allocator, "git -C {s} pull", .{repo});
 }
 
+/// Returns `git -C <repo> diff --exit-code`. Exit code 1 means changes exist.
 pub fn gitDiff(allocator: std.mem.Allocator, repo: []const u8) ![]const u8 {
     std.debug.assert(repo.len > 0);
     return std.fmt.allocPrint(allocator, "git -C {s} diff --exit-code", .{repo});
 }
 
+/// Returns `git -C <repo> status --porcelain`.
 pub fn gitStatus(allocator: std.mem.Allocator, repo: []const u8) ![]const u8 {
     std.debug.assert(repo.len > 0);
     return std.fmt.allocPrint(allocator, "git -C {s} status --porcelain", .{repo});
 }
 
+/// Returns `git -C <repo> add .`.
 pub fn gitAdd(allocator: std.mem.Allocator, repo: []const u8) ![]const u8 {
     std.debug.assert(repo.len > 0);
     return std.fmt.allocPrint(allocator, "git -C {s} add .", .{repo});
 }
 
+/// Returns `nix flake update --flake <repo>`.
 pub fn nixUpdate(allocator: std.mem.Allocator, repo: []const u8) ![]const u8 {
     std.debug.assert(repo.len > 0);
     return std.fmt.allocPrint(allocator, "nix flake update --flake {s}", .{repo});
 }
 
+/// Returns `sudo nixos-rebuild switch --flake <repo>#<hostname> --show-trace`.
 pub fn nixRebuild(
     allocator: std.mem.Allocator,
     repo: []const u8,
     hostname: []const u8,
 ) ![]const u8 {
-    // Assert preconditions: repo and hostname must be valid.
     std.debug.assert(repo.len > 0);
     std.debug.assert(hostname.len > 0);
     return std.fmt.allocPrint(
@@ -41,11 +50,11 @@ pub fn nixRebuild(
     );
 }
 
+/// Returns `sudo nix-env --profile /nix/var/nix/profiles/system --delete-generations +<n>`.
 pub fn nixKeep(
     allocator: std.mem.Allocator,
     generations_to_keep: u8,
 ) ![]const u8 {
-    // generations_to_keep must be > 0 to be meaningful.
     std.debug.assert(generations_to_keep > 0);
     return std.fmt.allocPrint(
         allocator,
@@ -54,9 +63,11 @@ pub fn nixKeep(
     );
 }
 
+/// Static command string for nix profile diff-closures with awk filtering.
 const nix_diff_profile = " --profile /nix/var/nix/profiles/system";
 const nix_diff_awk = " | awk '/Version/{print; exit} 1'";
 
+/// Pre-built nix diff command. No allocation needed — comptime concatenated.
 pub const nixDiff =
     "nix profile diff-closures" ++ nix_diff_profile ++ " | tac" ++ nix_diff_awk ++ " | tac";
 

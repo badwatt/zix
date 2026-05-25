@@ -1,13 +1,23 @@
+//! CLI orchestration: builds commands, executes update workflow, manages git staging.
+//! Two-phase design: init (allocation allowed) → static (zero allocation).
+//! All side effects injected via Deps for testability.
+
 const std = @import("std");
 const io = @import("../core/io.zig");
 const cmd = @import("../core/commands.zig");
 const process = @import("../core/process.zig");
 const Config = @import("config.zig").Config;
 
+/// Injected side effects: shell execution, user confirmation, UI output.
+/// Each field is a function pointer enabling full mock substitution in tests.
 pub const Deps = struct {
+    /// Run a shell command. Returns exit code.
     run: *const fn (std.Io, []const u8, process.RunOpts) anyerror!i32,
+    /// Prompt user for yes/no confirmation. `default_yes` sets default, `message` overrides prompt text.
     confirm: *const fn (*std.Io.Writer, bool, ?[]const u8) anyerror!bool,
+    /// Print a styled section title to output.
     printTitle: *const fn (*std.Io.Writer, []const u8) anyerror!void,
+    /// Print the full configuration summary to output.
     configPrint: *const fn (*std.Io.Writer, Config) anyerror!void,
 };
 
@@ -91,6 +101,8 @@ pub fn execute(
     }
 }
 
+/// Check for unstaged changes via git-diff, prompt user, optionally git-add.
+/// Returns silently if no changes detected.
 fn stageGitChanges(
     cli_io: std.Io,
     writer: *std.Io.Writer,
@@ -136,12 +148,15 @@ fn stageGitChanges(
 
 // --- Test Mocks ---
 
+/// Returns 1 for git-diff commands (simulating unstaged changes), 0 otherwise.
 fn mockRun(_: std.Io, command: []const u8, _: process.RunOpts) anyerror!i32 {
     if (std.mem.startsWith(u8, command, "git -C")) {
         if (std.mem.indexOf(u8, command, "diff --exit-code") != null) return 1;
     }
     return 0;
 }
+
+/// Tracks call count. Returns true for all calls except the second.
 var confirm_call_count: u32 = 0;
 fn mockConfirmCounting(
     _: *std.Io.Writer,
@@ -151,6 +166,8 @@ fn mockConfirmCounting(
     confirm_call_count += 1;
     return confirm_call_count != 2;
 }
+
+/// Always confirms yes.
 fn mockConfirmTrue(
     _: *std.Io.Writer,
     _: bool,
@@ -158,6 +175,8 @@ fn mockConfirmTrue(
 ) anyerror!bool {
     return true;
 }
+
+/// Always declines (returns false).
 fn mockConfirmFalse(
     _: *std.Io.Writer,
     _: bool,
@@ -165,11 +184,16 @@ fn mockConfirmFalse(
 ) anyerror!bool {
     return false;
 }
+
+/// No-op title printer for tests.
 fn mockPrintTitle(_: *std.Io.Writer, _: []const u8) anyerror!void {}
+
+/// No-op config printer for tests.
 fn mockConfigPrint(_: *std.Io.Writer, _: Config) anyerror!void {}
 
 // --- Tests ---
 
+/// Helper: build a minimal Config with given flags.
 fn testConfig(update: bool, diff: bool) Config {
     return Config{
         .repo = "r",

@@ -1,8 +1,15 @@
+//! Build configuration for zix.
+//!
+//! Defines targets: exe, test, coverage, docs, docs:serve.
+//! Module creation is deduplicated via `createModule`.
+
 const std = @import("std");
 const zon = @import("build.zig.zon");
 
 pub const version = std.SemanticVersion.parse(zon.version) catch @panic("Invalid version in build.zig.zon");
 
+/// Creates the root module with shared imports (zon module).
+/// Used by exe, test, and doc targets to avoid duplication.
 fn createModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Module {
     const mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
@@ -24,11 +31,12 @@ pub fn build(b: *std.Build) void {
 
     addExe(b, mod);
     addTest(b, mod);
-    addCoverage(b, mod, target, optimize);
     addDocs(b, mod);
+    addCoverage(b, mod, target, optimize);
     addDocsServe(b, target, optimize);
 }
 
+/// Builds and installs the zix executable. Adds `run` step.
 fn addExe(b: *std.Build, mod: *std.Build.Module) void {
     const exe = b.addExecutable(.{
         .name = "zix",
@@ -45,6 +53,7 @@ fn addExe(b: *std.Build, mod: *std.Build.Module) void {
     b.step("run", "Run the app").dependOn(&run_cmd.step);
 }
 
+/// Adds `test` step. Optionally installs test binary with `-Dtest-bin=true`.
 fn addTest(b: *std.Build, mod: *std.Build.Module) void {
     const install_bin = b.option(bool, "test-bin", "Install test binary for coverage analysis") orelse false;
 
@@ -58,6 +67,8 @@ fn addTest(b: *std.Build, mod: *std.Build.Module) void {
     b.step("test", "Run unit tests").dependOn(&b.addRunArtifact(compile).step);
 }
 
+/// Adds `coverage` step: runs kcov via nix-shell, then prints summary
+/// using the Zig coverage-report tool.
 fn addCoverage(b: *std.Build, mod: *std.Build.Module, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
     // Test binary
     const test_compile = b.addTest(.{
@@ -89,6 +100,7 @@ fn addCoverage(b: *std.Build, mod: *std.Build.Module, target: std.Build.Resolved
     b.step("coverage", "Run tests under kcov and print line coverage").dependOn(&kcov.step);
 }
 
+/// Adds `docs` step: builds autodoc and installs to zig-out/docs/.
 fn addDocs(b: *std.Build, mod: *std.Build.Module) void {
     const compile = b.addTest(.{
         .name = "zix-docs",
@@ -102,6 +114,8 @@ fn addDocs(b: *std.Build, mod: *std.Build.Module) void {
     b.step("docs", "Build documentation").dependOn(&install.step);
 }
 
+/// Adds `docs:serve` step: builds docs then starts a local HTTP server.
+/// The server reads files from the installed docs directory.
 fn addDocsServe(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
     const serve_mod = b.createModule(.{
         .root_source_file = b.path("build/serve.zig"),

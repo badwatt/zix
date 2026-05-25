@@ -1,3 +1,13 @@
+//! Three-phase allocator that enforces zero allocation at runtime.
+//!
+//! Phase .init: alloc, resize, and free are allowed. Used during startup.
+//! Phase .static: only free is allowed. Any alloc or resize panics.
+//! Phase .deinit: only free is allowed. Used during shutdown cleanup.
+//!
+//! The allocator wraps a parent allocator (typically ArenaAllocator).
+//! Free always delegates — even in .static — because std.fmt.allocPrint
+//! internally frees intermediate buffers.
+
 const std = @import("std");
 const assert = std.debug.assert;
 const mem = std.mem;
@@ -8,6 +18,7 @@ const StaticAllocator = @This();
 parent_allocator: mem.Allocator,
 state: State,
 
+/// Allocator lifecycle states.
 const State = enum {
     /// Allow alloc, resize, and free. Used during startup/init.
     /// Accidentally calling free switches to .deinit for errdefer compatibility.
@@ -18,21 +29,23 @@ const State = enum {
     deinit,
 };
 
+/// Creates a StaticAllocator wrapping `parent_allocator`. Starts in .init state.
 pub fn init(parent_allocator: mem.Allocator) StaticAllocator {
-    // State starts in .init to allow allocation during setup.
     return .{
         .parent_allocator = parent_allocator,
         .state = .init,
     };
 }
 
+/// Transitions from .init to .static. Panics if not in .init.
+/// Call after all startup allocation is complete.
 pub fn transition_from_init_to_static(self: *StaticAllocator) void {
     assert(self.state == .init);
     self.state = .static;
 }
 
-/// Call during shutdown to allow free.
-/// Panics if in .init state (transition_to_static was never called).
+/// Transitions from .static to .deinit. Panics if in .init
+/// (transition_to_static was never called).
 pub fn transition_from_static_to_deinit(self: *StaticAllocator) void {
     assert(self.state == .static);
     self.state = .deinit;
@@ -44,8 +57,9 @@ pub fn transition_from_static_to_deinit_if_static(self: *StaticAllocator) void {
     if (self.state == .static) self.state = .deinit;
 }
 
+/// Returns a std.mem.Allocator that delegates to this StaticAllocator.
+/// Asserts invariant: must be in .init or .static state to vend an allocator.
 pub fn allocator(self: *StaticAllocator) mem.Allocator {
-    // Assert invariant: must be in init or static state to vend an allocator.
     assert(self.state == .init or self.state == .static);
     return .{
         .ptr = self,
@@ -58,29 +72,31 @@ pub fn allocator(self: *StaticAllocator) mem.Allocator {
     };
 }
 
+/// Allocates memory. Panics if not in .init state.
 fn alloc(ctx: *anyopaque, len: usize, ptr_align: Alignment, ret_addr: usize) ?[*]u8 {
     const self: *StaticAllocator = @ptrCast(@alignCast(ctx));
     assert(self.state == .init);
     return self.parent_allocator.rawAlloc(len, ptr_align, ret_addr);
 }
 
+/// Resizes allocation. Panics if not in .init phase.
 fn resize(ctx: *anyopaque, buf: []u8, buf_align: Alignment, new_len: usize, ret_addr: usize) bool {
     const self: *StaticAllocator = @ptrCast(@alignCast(ctx));
     assert(self.state == .init);
     return self.parent_allocator.rawResize(buf, buf_align, new_len, ret_addr);
 }
 
+/// Remaps allocation. Panics if not in .init phase.
 fn remap(ctx: *anyopaque, buf: []u8, buf_align: Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
     const self: *StaticAllocator = @ptrCast(@alignCast(ctx));
     assert(self.state == .init);
     return self.parent_allocator.rawRemap(buf, buf_align, new_len, ret_addr);
 }
 
+/// Frees memory. Allowed in all states because std.fmt.allocPrint
+/// internally frees intermediate buffers during both .init and .deinit.
 fn free(ctx: *anyopaque, buf: []u8, buf_align: Alignment, ret_addr: usize) void {
     const self: *StaticAllocator = @ptrCast(@alignCast(ctx));
-    // Allow free in all states: allocPrint internally frees intermediate buffers,
-    // and these frees happen both during init (pre-transition) and at deinit.
-    // In .static state, only free is permitted — alloc and resize panic.
     _ = self.state;
     return self.parent_allocator.rawFree(buf, buf_align, ret_addr);
 }

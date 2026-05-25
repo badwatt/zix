@@ -1,7 +1,14 @@
+//! I/O utilities: formatted output and ANSI style constants.
+//!
+//! `printTo` wraps `Writer.print` + `flush` for immediate output.
+//! Style constants provide shorthand ANSI escape sequences.
+
 const std = @import("std");
 
 // --- Formatting ---
 
+/// Writes formatted text to `writer` and flushes immediately.
+/// Asserts format string is non-empty.
 pub fn printTo(
     writer: *std.Io.Writer,
     comptime format: []const u8,
@@ -16,6 +23,7 @@ pub fn printTo(
 
 // --- ANSI Styles ---
 
+/// ANSI foreground color escape sequences and reset codes.
 pub const Red = "\x1b[31m";
 pub const Green = "\x1b[32m";
 pub const Yellow = "\x1b[33m";
