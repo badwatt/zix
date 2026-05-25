@@ -64,7 +64,8 @@ fn addTest(b: *std.Build, mod: *std.Build.Module) void {
     });
     if (install_bin) b.installArtifact(compile);
 
-    b.step("test", "Run unit tests").dependOn(&b.addRunArtifact(compile).step);
+    const run_tests = b.addRunArtifact(compile);
+    b.step("test", "Run unit tests").dependOn(&run_tests.step);
 }
 
 /// Adds `coverage` step: runs kcov via nix-shell, then prints summary
@@ -135,4 +136,3 @@ fn addDocsServe(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.b
 
     b.step("docs:serve", "Build docs and serve at localhost:8000").dependOn(&serve_cmd.step);
 }
-
