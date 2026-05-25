@@ -6,6 +6,8 @@ const process = @import("core/process.zig");
 const StaticAllocator = @import("core/static_allocator.zig");
 
 pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+
     // Arena allocator: all allocation happens during init only.
     // StaticAllocator blocks alloc/free after transition to .static.
     // arena.deinit() frees everything at shutdown — after execute() returns.
@@ -26,7 +28,7 @@ pub fn main(init: std.process.Init) !void {
 
     var stdout_buf: [4096]u8 = undefined;
     const stdout_file = std.Io.File.stdout();
-    var stdout_writer = stdout_file.writer(init.io, &stdout_buf);
+    var stdout_writer = stdout_file.writer(io, &stdout_buf);
 
     // Dependency injection: all side effects go through Deps for testability.
     const deps = cli.Deps{
@@ -37,7 +39,7 @@ pub fn main(init: std.process.Init) !void {
     };
 
     try app.run(
-        init.io,
+        io,
         &stdout_writer.interface,
         args_list.items,
         deps,
