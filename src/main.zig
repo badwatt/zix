@@ -16,20 +16,18 @@ const StaticAllocator = @import("core/static_allocator.zig");
 /// and tears down in reverse order.
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
+    const arena = init.arena;
+    const args = init.minimal.args;
 
-    // Arena allocator: all allocation happens during init only.
-    // StaticAllocator blocks alloc/free after transition to .static.
-    // arena.deinit() frees everything at shutdown — after execute() returns.
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-
+    // StaticAllocator wraps process arena. All allocation happens during
+    // init only; arena is cleaned up automatically on process exit.
     var static_allocator = StaticAllocator.init(arena.allocator());
 
     const allocator = static_allocator.allocator();
 
     var args_list: std.ArrayList([]const u8) = .empty;
     defer args_list.deinit(allocator);
-    for (init.minimal.args.vector) |arg_z| {
+    for (args.vector) |arg_z| {
         try args_list.append(allocator, std.mem.sliceTo(arg_z, 0));
     }
     // Must have at least the program name.
