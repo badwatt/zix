@@ -45,7 +45,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           ref: ${{ needs.tag.outputs.version }}
-      - uses: mlugg/setup-zig@v2
+      - uses: https://github.com/mlugg/setup-zig@v2
       - run: zig build -Doptimize=ReleaseSafe -Dtarget=${{ matrix.target }}
       - uses: actions/upload-artifact@v7
         with:
@@ -68,7 +68,7 @@ jobs:
           echo "prev=$PREV" >> $GITHUB_OUTPUT
       - name: Build Changelog
         id: build_changelog
-        uses: mikepenz/release-changelog-builder-action@v6
+        uses: https://github.com/mikepenz/release-changelog-builder-action@v6
         with:
           fromTag: ${{ steps.prev.outputs.prev }}
           toTag: ${{ needs.tag.outputs.version }}
@@ -137,7 +137,7 @@ jobs:
         with:
           path: artifacts
           pattern: zix-*
-      - uses: softprops/action-gh-release@v2
+      - uses: https://github.com/softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.tag.outputs.version }}
           files: artifacts/**/zix
