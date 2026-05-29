@@ -33,13 +33,14 @@ jobs:
             echo "created=true" >> $GITHUB_OUTPUT
           fi
 
-  build:
+  release:
     needs: tag
     if: needs.tag.outputs.created == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:
+          fetch-depth: 0
           ref: ${{ needs.tag.outputs.version }}
       - run: sudo apt-get update && sudo apt-get install -y xz-utils
       - uses: https://github.com/mlugg/setup-zig@v2
@@ -51,22 +52,6 @@ jobs:
           mv zig-out-x86_64/bin/zix zig-out/bin/zix-x86_64-linux
           mv zig-out-aarch64/bin/zix zig-out/bin/zix-aarch64-linux
           rm -rf zig-out-x86_64 zig-out-aarch64
-      - uses: actions/upload-artifact@v3
-        with:
-          name: zix-binaries
-          path: |
-            zig-out/bin/zix-x86_64-linux
-            zig-out/bin/zix-aarch64-linux
-
-  release:
-    needs: [tag, build]
-    if: needs.tag.outputs.created == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-          ref: ${{ needs.tag.outputs.version }}
       - name: Get previous tag
         id: prev
         run: |
@@ -139,12 +124,8 @@ jobs:
             }
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - uses: actions/download-artifact@v3
-        with:
-          name: zix-binaries
-          path: artifacts
       - uses: https://github.com/softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.tag.outputs.version }}
-          files: artifacts/zix-*
+          files: zig-out/bin/zix-*
           body: ${{ steps.build_changelog.outputs.changelog }}
