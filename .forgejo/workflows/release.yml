@@ -39,12 +39,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [x86_64-linux]
+        target: [x86_64-linux, aarch64-linux]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:
           ref: ${{ needs.tag.outputs.version }}
+      - run: sudo apt-get update && sudo apt-get install -y xz-utils
       - uses: https://github.com/mlugg/setup-zig@v2
       - run: zig build -Doptimize=ReleaseSafe -Dtarget=${{ matrix.target }}
       - uses: actions/upload-artifact@v7
