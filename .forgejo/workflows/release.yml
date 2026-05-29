@@ -44,11 +44,13 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y xz-utils
       - uses: https://github.com/mlugg/setup-zig@v2
       - run: |
-          zig build -Doptimize=ReleaseSafe -Dtarget=x86_64-linux
-          mv zig-out/bin/zix zig-out/bin/zix-x86_64-linux
-      - run: |
-          zig build -Doptimize=ReleaseSafe -Dtarget=aarch64-linux
-          mv zig-out/bin/zix zig-out/bin/zix-aarch64-linux
+          zig build -Doptimize=ReleaseSafe -Dtarget=x86_64-linux --prefix zig-out-x86_64 &
+          zig build -Doptimize=ReleaseSafe -Dtarget=aarch64-linux --prefix zig-out-aarch64 &
+          wait
+          mkdir -p zig-out/bin
+          mv zig-out-x86_64/bin/zix zig-out/bin/zix-x86_64-linux
+          mv zig-out-aarch64/bin/zix zig-out/bin/zix-aarch64-linux
+          rm -rf zig-out-x86_64 zig-out-aarch64
       - uses: actions/upload-artifact@v3
         with:
           name: zix-binaries
