@@ -49,7 +49,7 @@ jobs:
       - run: |
           zig build -Doptimize=ReleaseSafe -Dtarget=aarch64-linux
           mv zig-out/bin/zix zig-out/bin/zix-aarch64-linux
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v3
         with:
           name: zix-binaries
           path: |
@@ -137,7 +137,7 @@ jobs:
             }
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@v3
         with:
           name: zix-binaries
           path: artifacts
