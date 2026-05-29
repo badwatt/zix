@@ -36,10 +36,6 @@ jobs:
   build:
     needs: tag
     if: needs.tag.outputs.created == 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        target: [x86_64-linux, aarch64-linux]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -47,11 +43,18 @@ jobs:
           ref: ${{ needs.tag.outputs.version }}
       - run: sudo apt-get update && sudo apt-get install -y xz-utils
       - uses: https://github.com/mlugg/setup-zig@v2
-      - run: zig build -Doptimize=ReleaseSafe -Dtarget=${{ matrix.target }}
+      - run: |
+          zig build -Doptimize=ReleaseSafe -Dtarget=x86_64-linux
+          mv zig-out/bin/zix zig-out/bin/zix-x86_64-linux
+      - run: |
+          zig build -Doptimize=ReleaseSafe -Dtarget=aarch64-linux
+          mv zig-out/bin/zix zig-out/bin/zix-aarch64-linux
       - uses: actions/upload-artifact@v7
         with:
-          name: zix-${{ matrix.target }}
-          path: zig-out/bin/zix
+          name: zix-binaries
+          path: |
+            zig-out/bin/zix-x86_64-linux
+            zig-out/bin/zix-aarch64-linux
 
   release:
     needs: [tag, build]
@@ -136,10 +139,10 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions/download-artifact@v8
         with:
+          name: zix-binaries
           path: artifacts
-          pattern: zix-*
       - uses: https://github.com/softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.tag.outputs.version }}
-          files: artifacts/**/zix
+          files: artifacts/zix-*
           body: ${{ steps.build_changelog.outputs.changelog }}
