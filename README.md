@@ -1,7 +1,5 @@
 # ZIX
 
-> :warning: **MIRROR**: this project is a mirror from https://codefloe.com/badwatt/zix
-
 ![](vhs/zix.gif)
 
 CLI tool for managing NixOS configuration.
