@@ -48,29 +48,39 @@ pub fn nixUpdate(
     return std.fmt.allocPrint(allocator, "nix flake update --flake {s}", .{repo});
 }
 
-/// Returns `nixos-rebuild switch --elevate=sudo --flake <repo>#<hostname> --show-trace`.
-/// Evaluation runs as the invoking user; only activation is elevated. When
-/// `fast` is true, `--no-reexec` skips the self re-exec evaluation.
+/// Which `nixos-rebuild` implementation is installed. The newer `-ng`
+/// rewrite supports `--elevate` (evaluate as the invoking user) and
+/// `--no-reexec`; the classic shell script elevates the whole command and
+/// spells the re-exec skip `--fast`.
+pub const RebuildFlavor = enum { classic, ng };
+
+/// Capability probe: `--elevate` exists only in the `-ng` rewrite, and
+/// `list-generations` is read-only. Exit code 0 means `-ng`.
+pub const rebuild_probe = "nixos-rebuild --elevate=none list-generations";
+
+/// Builds the `switch` command for the detected `nixos-rebuild` flavor.
+/// `fast` skips the self re-exec with the flavor-appropriate flag.
 pub fn nixRebuild(
     allocator: std.mem.Allocator,
     repo: []const u8,
     hostname: []const u8,
     fast: bool,
+    flavor: RebuildFlavor,
 ) ![]const u8 {
     std.debug.assert(repo.len > 0);
     std.debug.assert(hostname.len > 0);
-    if (fast) {
-        return std.fmt.allocPrint(
-            allocator,
-            "nixos-rebuild switch --elevate=sudo --no-reexec" ++
-                " --flake {s}#{s} --show-trace",
-            .{ repo, hostname },
-        );
-    }
+    const prefix: []const u8 = switch (flavor) {
+        .ng => "nixos-rebuild switch --elevate=sudo",
+        .classic => "sudo nixos-rebuild switch",
+    };
+    const reexec: []const u8 = if (!fast) "" else switch (flavor) {
+        .ng => " --no-reexec",
+        .classic => " --fast",
+    };
     return std.fmt.allocPrint(
         allocator,
-        "nixos-rebuild switch --elevate=sudo --flake {s}#{s} --show-trace",
-        .{ repo, hostname },
+        "{s}{s} --flake {s}#{s} --show-trace",
+        .{ prefix, reexec, repo, hostname },
     );
 }
 
@@ -115,17 +125,29 @@ test "command strings" {
     const s4i = try nixUpdate(alloc, "/repo", "nixpkgs");
     defer alloc.free(s4i);
     try std.testing.expectEqualStrings("nix flake update --flake /repo nixpkgs", s4i);
-    const s5 = try nixRebuild(alloc, "/repo", "host", false);
+    const s5 = try nixRebuild(alloc, "/repo", "host", false, .ng);
     defer alloc.free(s5);
     try std.testing.expectEqualStrings(
         "nixos-rebuild switch --elevate=sudo --flake /repo#host --show-trace",
         s5,
     );
-    const s5f = try nixRebuild(alloc, "/repo", "host", true);
+    const s5f = try nixRebuild(alloc, "/repo", "host", true, .ng);
     defer alloc.free(s5f);
     try std.testing.expectEqualStrings(
         "nixos-rebuild switch --elevate=sudo --no-reexec --flake /repo#host --show-trace",
         s5f,
+    );
+    const s5c = try nixRebuild(alloc, "/repo", "host", false, .classic);
+    defer alloc.free(s5c);
+    try std.testing.expectEqualStrings(
+        "sudo nixos-rebuild switch --flake /repo#host --show-trace",
+        s5c,
+    );
+    const s5cf = try nixRebuild(alloc, "/repo", "host", true, .classic);
+    defer alloc.free(s5cf);
+    try std.testing.expectEqualStrings(
+        "sudo nixos-rebuild switch --fast --flake /repo#host --show-trace",
+        s5cf,
     );
     const s6 = try nixKeep(alloc, 5);
     defer alloc.free(s6);

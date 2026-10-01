@@ -37,7 +37,12 @@ pub const Commands = struct {
 };
 
 /// Phase 1: Init. Build all command strings. Allocation allowed.
-pub fn buildCommands(config: Config, allocator: std.mem.Allocator) !Commands {
+/// `flavor` selects the flags compatible with the installed `nixos-rebuild`.
+pub fn buildCommands(
+    config: Config,
+    flavor: cmd.RebuildFlavor,
+    allocator: std.mem.Allocator,
+) !Commands {
     // Assert preconditions.
     std.debug.assert(config.repo.len > 0);
     std.debug.assert(config.hostname.len > 0);
@@ -49,7 +54,13 @@ pub fn buildCommands(config: Config, allocator: std.mem.Allocator) !Commands {
         .git_status = try cmd.gitStatus(allocator, config.repo),
         .git_add = try cmd.gitAdd(allocator, config.repo),
         .nix_update = try cmd.nixUpdate(allocator, config.repo, config.update_input),
-        .nix_rebuild = try cmd.nixRebuild(allocator, config.repo, config.hostname, config.fast),
+        .nix_rebuild = try cmd.nixRebuild(
+            allocator,
+            config.repo,
+            config.hostname,
+            config.fast,
+            flavor,
+        ),
         .nix_keep = try cmd.nixKeep(allocator, config.keep),
     };
 }
@@ -212,10 +223,14 @@ test "buildCommands reflects flags" {
     var config = testConfig(true, false);
     config.fast = true;
     config.update_input = "nixpkgs";
-    const commands = try buildCommands(config, allocator);
 
-    try std.testing.expect(std.mem.indexOf(u8, commands.nix_rebuild, "--no-reexec") != null);
-    try std.testing.expect(std.mem.indexOf(u8, commands.nix_update, "nixpkgs") != null);
+    const ng = try buildCommands(config, .ng, allocator);
+    try std.testing.expect(std.mem.indexOf(u8, ng.nix_rebuild, "--no-reexec") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ng.nix_update, "nixpkgs") != null);
+
+    const classic = try buildCommands(config, .classic, allocator);
+    try std.testing.expect(std.mem.indexOf(u8, classic.nix_rebuild, "sudo nixos-rebuild") != null);
+    try std.testing.expect(std.mem.indexOf(u8, classic.nix_rebuild, "--fast") != null);
 }
 
 test "execute branches" {
@@ -235,7 +250,7 @@ test "execute branches" {
     };
 
     // Phase 1: build commands.
-    const commands = try buildCommands(testConfig(true, true), allocator);
+    const commands = try buildCommands(testConfig(true, true), .ng, allocator);
 
     // Phase 2: execute (zero alloc from here).
 
@@ -290,7 +305,7 @@ test "execute git add failure" {
     var writer = std.Io.Writer.fixed(&buf);
     const cli_io = std.testing.io;
 
-    const commands = try buildCommands(testConfig(false, true), allocator);
+    const commands = try buildCommands(testConfig(false, true), .ng, allocator);
 
     const add_fail_deps = Deps{
         .run = struct {
@@ -320,7 +335,7 @@ test "execute decline add changes" {
     var writer = std.Io.Writer.fixed(&buf);
     const cli_io = std.testing.io;
 
-    const commands = try buildCommands(testConfig(false, true), allocator);
+    const commands = try buildCommands(testConfig(false, true), .ng, allocator);
 
     confirm_call_count = 0;
     const decline_deps = Deps{

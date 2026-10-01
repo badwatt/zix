@@ -100,6 +100,10 @@ Autodoc uses `///` (declarations) and `//!` (module-level) comments. No doc comm
  -v, version : Display the current version
 ```
 
+zix auto-detects whether the installed `nixos-rebuild` is the classic
+shell script or the newer `-ng` rewrite and passes the compatible flags:
+`--elevate=sudo`/`--no-reexec` on `-ng`, `sudo`/`--fast` on classic.
+
 ## Project Structure
 
 ```
