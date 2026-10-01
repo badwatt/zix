@@ -62,7 +62,7 @@ jobs:
           fetch-depth: 0
           ref: ${{ needs.tag.outputs.version }}
       - run: sudo apt-get update && sudo apt-get install -y xz-utils
-      - uses: https://github.com/mlugg/setup-zig@v2
+      - uses: mlugg/setup-zig@v2
       - run: |
           zig build -Doptimize=ReleaseSafe -Dtarget=x86_64-linux --prefix zig-out-x86_64 &
           zig build -Doptimize=ReleaseSafe -Dtarget=aarch64-linux --prefix zig-out-aarch64 &
