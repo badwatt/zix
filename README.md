@@ -93,16 +93,17 @@ Autodoc uses `///` (declarations) and `//!` (module-level) comments. No doc comm
  -r : set repo path (default is $HOME/.dotfiles)
  -n : set hostname (default is OS hostname)
  -k : set generations to keep (default is 10)
- -u [input] : update flake inputs, all or a single one (default is false)
- -f : skip nixos-rebuild re-exec for a faster rebuild (default is false)
+ -u : set update to true (default is false)
  -d : set diff to true (default is false)
  -h, help : Display this help message
  -v, version : Display the current version
 ```
 
 zix auto-detects whether the installed `nixos-rebuild` is the classic
-shell script or the newer `-ng` rewrite and passes the compatible flags:
-`--elevate=sudo`/`--no-reexec` on `-ng`, `sudo`/`--fast` on classic.
+shell script or the newer `-ng` rewrite and uses the compatible flags:
+`--elevate=sudo` and `--no-reexec` on `-ng`, `sudo` and `--fast` on
+classic. The self re-exec is always skipped to avoid its extra
+evaluation.
 
 ## Project Structure
 

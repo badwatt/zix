@@ -15,10 +15,6 @@ pub const Config = struct {
     keep: u8,
     /// Whether to run `nix flake update` before rebuild.
     update: bool,
-    /// Flake input to update when `update` is set. Null updates every input.
-    update_input: ?[]const u8 = null,
-    /// Whether to skip the nixos-rebuild self re-exec (`--no-reexec`).
-    fast: bool = false,
     /// Whether to show nix profile diff-closures after rebuild.
     diff: bool,
 

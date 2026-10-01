@@ -53,14 +53,8 @@ pub fn buildCommands(
         .git_diff = try cmd.gitDiff(allocator, config.repo),
         .git_status = try cmd.gitStatus(allocator, config.repo),
         .git_add = try cmd.gitAdd(allocator, config.repo),
-        .nix_update = try cmd.nixUpdate(allocator, config.repo, config.update_input),
-        .nix_rebuild = try cmd.nixRebuild(
-            allocator,
-            config.repo,
-            config.hostname,
-            config.fast,
-            flavor,
-        ),
+        .nix_update = try cmd.nixUpdate(allocator, config.repo),
+        .nix_rebuild = try cmd.nixRebuild(allocator, config.repo, config.hostname, flavor),
         .nix_keep = try cmd.nixKeep(allocator, config.keep),
     };
 }
@@ -215,18 +209,16 @@ fn testConfig(update: bool, diff: bool) Config {
     };
 }
 
-test "buildCommands reflects flags" {
+test "buildCommands reflects flavor" {
     var memory: [4096]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&memory);
     const allocator = fba.allocator();
 
-    var config = testConfig(true, false);
-    config.fast = true;
-    config.update_input = "nixpkgs";
+    const config = testConfig(true, false);
 
     const ng = try buildCommands(config, .ng, allocator);
+    try std.testing.expect(std.mem.indexOf(u8, ng.nix_rebuild, "--elevate=sudo") != null);
     try std.testing.expect(std.mem.indexOf(u8, ng.nix_rebuild, "--no-reexec") != null);
-    try std.testing.expect(std.mem.indexOf(u8, ng.nix_update, "nixpkgs") != null);
 
     const classic = try buildCommands(config, .classic, allocator);
     try std.testing.expect(std.mem.indexOf(u8, classic.nix_rebuild, "sudo nixos-rebuild") != null);

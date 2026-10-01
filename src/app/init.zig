@@ -88,21 +88,7 @@ fn parseFlags(
                     'h' => return .help,
                     'v' => return .version,
                     'd' => config.diff = true,
-                    'f' => config.fast = true,
-                    'u' => {
-                        config.update = true;
-                        // Standalone `-u <input>` updates only that flake input.
-                        if (arg.len == 2 and arg_index + 1 < args.len) {
-                            const next = args[arg_index + 1];
-                            const is_flag = next.len > 0 and next[0] == '-';
-                            const is_keyword = equal(u8, next, "help") or
-                                equal(u8, next, "version");
-                            if (!is_flag and !is_keyword) {
-                                arg_index += 1;
-                                config.update_input = args[arg_index];
-                            }
-                        }
-                    },
+                    'u' => config.update = true,
                     'r', 'n', 'k' => {
                         arg_index += 1;
                         if (arg_index >= args.len) {
@@ -227,10 +213,6 @@ test "run flag branches" {
         .{ .args = &.{ "zix", "-x" }, .expect_contains = "Unknown flag" },
         .{ .args = &.{ "zix", "-d" }, .expect_contains = null },
         .{ .args = &.{ "zix", "-u" }, .expect_contains = null },
-        .{ .args = &.{ "zix", "-f" }, .expect_contains = null },
-        .{ .args = &.{ "zix", "-u", "nixpkgs" }, .expect_contains = null },
-        .{ .args = &.{ "zix", "-u", "-d" }, .expect_contains = null },
-        .{ .args = &.{ "zix", "-u", "help" }, .expect_contains = "ZIX" },
         .{ .args = &.{ "zix", "-d", "help" }, .expect_contains = "ZIX" },
         .{ .args = &.{ "zix", "-d", "unknown" }, .expect_contains = "Unknown argument" },
     };
