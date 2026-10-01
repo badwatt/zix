@@ -12,7 +12,7 @@ CLI tool for managing NixOS configuration.
 ## Installation
 
 ```sh
-git clone https://github.com/alvaro17f/zix.git
+git clone https://github.com/badwatt/zix.git
 cd zix
 zig build run
 ```
@@ -26,7 +26,7 @@ sudo mv zig-out/bin/zix <PATH>
 ### NixOS
 
 ```sh
-nix run github:alvaro17f/zix#target.x86_64-linux-musl
+nix run github:badwatt/zix#target.x86_64-linux-musl
 ```
 
 Add to flake:
@@ -34,7 +34,7 @@ Add to flake:
 ```nix
 {
     inputs = {
-        zix.url = "github:alvaro17f/zix";
+        zix.url = "github:badwatt/zix";
     };
 }
 ```
