@@ -1,0 +1,154 @@
+name: release
+
+permissions:
+  contents: write
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.extract.outputs.version }}
+      created: ${{ steps.extract.outputs.created }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - id: extract
+        run: |
+          VERSION=$(awk '/\.version/{gsub(/"/, "", $3); gsub(/,/, "", $3); print $3}' build.zig.zon)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          if git rev-parse "$VERSION" >/dev/null 2>&1; then
+            echo "Tag $VERSION already exists — skipping."
+            echo "created=false" >> $GITHUB_OUTPUT
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git tag "$VERSION"
+            git push origin "$VERSION"
+            echo "created=true" >> $GITHUB_OUTPUT
+          fi
+
+  build:
+    needs: tag
+    if: needs.tag.outputs.created == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x86_64-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.tag.outputs.version }}
+      - uses: mlugg/setup-zig@v2
+      - run: zig build -Doptimize=ReleaseSafe -Dtarget=${{ matrix.target }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: zix-${{ matrix.target }}
+          path: zig-out/bin/zix
+
+  release:
+    needs: tag
+    if: needs.tag.outputs.created == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.tag.outputs.version }}
+      - run: sudo apt-get update && sudo apt-get install -y xz-utils
+      - uses: https://github.com/mlugg/setup-zig@v2
+      - run: |
+          zig build -Doptimize=ReleaseSafe -Dtarget=x86_64-linux --prefix zig-out-x86_64 &
+          zig build -Doptimize=ReleaseSafe -Dtarget=aarch64-linux --prefix zig-out-aarch64 &
+          wait
+          mkdir -p zig-out/bin
+          mv zig-out-x86_64/bin/zix zig-out/bin/zix-x86_64-linux
+          mv zig-out-aarch64/bin/zix zig-out/bin/zix-aarch64-linux
+          rm -rf zig-out-x86_64 zig-out-aarch64
+      - name: Get previous tag
+        id: prev
+        run: |
+          PREV=$(git describe --tags --abbrev=0 HEAD~1 2>/dev/null || echo "")
+          echo "prev=$PREV" >> $GITHUB_OUTPUT
+      - name: Build Changelog
+        id: build_changelog
+        uses: mikepenz/release-changelog-builder-action@v6
+        with:
+          fromTag: ${{ steps.prev.outputs.prev }}
+          toTag: ${{ needs.tag.outputs.version }}
+          mode: "COMMIT"
+          configurationJson: |
+            {
+              "pr_template": "- #{{TITLE}}",
+              "categories": [
+                {
+                  "title": "## 🚨 Breaking Changes",
+                  "labels": ["breaking"]
+                },
+                {
+                  "title": "## 🚀 Feature",
+                  "labels": ["feat", "feature"]
+                },
+                {
+                  "title": "## 🐛 Fix",
+                  "labels": ["fix", "bug"]
+                },
+                {
+                  "title": "## ♻️ Refactor",
+                  "labels": ["refactor"]
+                },
+                {
+                  "title": "## 🧪 Tests",
+                  "labels": ["test"]
+                },
+                {
+                  "title": "## 💄 Style",
+                  "labels": ["style"]
+                },
+                {
+                  "title": "## 📝 Docs",
+                  "labels": ["docs"]
+                },
+                {
+                  "title": "## 🔨 Chore",
+                  "labels": ["chore"]
+                },
+                {
+                  "title": "## ⚡️ Performance",
+                  "labels": ["perf"]
+                },
+                {
+                  "title": "## 👷 CI",
+                  "labels": ["ci"]
+                }
+              ],
+              "label_extractor": [
+                {
+                  "pattern": ".*!.*|^breaking:.*",
+                  "target": "breaking",
+                  "on_property": "title"
+                },
+                {
+                  "pattern": "^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test){1}(\\([\\w\\-\\.]+\\))?(: ([\\w ])+([\\s\\S]*))?",
+                  "target": "$1",
+                  "on_property": "title"
+                }
+              ]
+            }
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          pattern: zix-*
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.tag.outputs.version }}
+          files: zig-out/bin/zix-*
+          body: ${{ steps.build_changelog.outputs.changelog }}
