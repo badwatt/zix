@@ -38,7 +38,8 @@ pub fn printHelp(writer: *std.Io.Writer) !void {
         \\ -r : set repo path (default is $HOME/.dotfiles)
         \\ -n : set hostname (default is OS hostname)
         \\ -k : set generations to keep (default is 10)
-        \\ -u : set update to true (default is false)
+        \\ -u [input] : update flake inputs, all or a single one (default is false)
+        \\ -f : skip nixos-rebuild re-exec for a faster rebuild (default is false)
         \\ -d : set diff to true (default is false)
         \\ -h, help : Display this help message
         \\ -v, version : Display the current version
@@ -68,14 +69,16 @@ fn printConfigLine(
     options: struct { new_line: bool = true },
 ) !void {
     std.debug.assert(label.len > 0);
-    const value_fmt = comptime if (@TypeOf(value) == []const u8) "{" ++ "s}" else "{" ++ "}";
+    const T = @TypeOf(value);
+    const value_fmt = comptime if (T == []const u8 or T == ?[]const u8) "{s}" else "{}";
+    const display = if (comptime (T == ?[]const u8)) value orelse "null" else value;
     try io.printTo(writer, "{s}◉ {s}{s}{s} = {s}" ++ value_fmt ++ "{s}{s}", .{
         io.Cyan,
         io.Red,
         label,
         io.Reset,
         io.Cyan,
-        value,
+        display,
         io.Reset,
         if (options.new_line) "\n" else "",
     });
@@ -218,6 +221,8 @@ test "configPrint renders all fields" {
     try std.testing.expect(std.mem.indexOf(u8, &buf, "hostname") != null);
     try std.testing.expect(std.mem.indexOf(u8, &buf, "keep") != null);
     try std.testing.expect(std.mem.indexOf(u8, &buf, "update") != null);
+    try std.testing.expect(std.mem.indexOf(u8, &buf, "update_input") != null);
+    try std.testing.expect(std.mem.indexOf(u8, &buf, "fast") != null);
     try std.testing.expect(std.mem.indexOf(u8, &buf, "diff") != null);
 }
 

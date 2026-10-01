@@ -48,8 +48,8 @@ pub fn buildCommands(config: Config, allocator: std.mem.Allocator) !Commands {
         .git_diff = try cmd.gitDiff(allocator, config.repo),
         .git_status = try cmd.gitStatus(allocator, config.repo),
         .git_add = try cmd.gitAdd(allocator, config.repo),
-        .nix_update = try cmd.nixUpdate(allocator, config.repo),
-        .nix_rebuild = try cmd.nixRebuild(allocator, config.repo, config.hostname),
+        .nix_update = try cmd.nixUpdate(allocator, config.repo, config.update_input),
+        .nix_rebuild = try cmd.nixRebuild(allocator, config.repo, config.hostname, config.fast),
         .nix_keep = try cmd.nixKeep(allocator, config.keep),
     };
 }
@@ -202,6 +202,20 @@ fn testConfig(update: bool, diff: bool) Config {
         .update = update,
         .diff = diff,
     };
+}
+
+test "buildCommands reflects flags" {
+    var memory: [4096]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&memory);
+    const allocator = fba.allocator();
+
+    var config = testConfig(true, false);
+    config.fast = true;
+    config.update_input = "nixpkgs";
+    const commands = try buildCommands(config, allocator);
+
+    try std.testing.expect(std.mem.indexOf(u8, commands.nix_rebuild, "--no-reexec") != null);
+    try std.testing.expect(std.mem.indexOf(u8, commands.nix_update, "nixpkgs") != null);
 }
 
 test "execute branches" {

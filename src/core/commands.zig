@@ -29,23 +29,47 @@ pub fn gitAdd(allocator: std.mem.Allocator, repo: []const u8) ![]const u8 {
     return std.fmt.allocPrint(allocator, "git -C {s} add .", .{repo});
 }
 
-/// Returns `nix flake update --flake <repo>`.
-pub fn nixUpdate(allocator: std.mem.Allocator, repo: []const u8) ![]const u8 {
+/// Returns `nix flake update --flake <repo>`. When `input` is non-null,
+/// appends the input name to update only that flake input.
+pub fn nixUpdate(
+    allocator: std.mem.Allocator,
+    repo: []const u8,
+    input: ?[]const u8,
+) ![]const u8 {
     std.debug.assert(repo.len > 0);
+    if (input) |name| {
+        std.debug.assert(name.len > 0);
+        return std.fmt.allocPrint(
+            allocator,
+            "nix flake update --flake {s} {s}",
+            .{ repo, name },
+        );
+    }
     return std.fmt.allocPrint(allocator, "nix flake update --flake {s}", .{repo});
 }
 
-/// Returns `sudo nixos-rebuild switch --flake <repo>#<hostname> --show-trace`.
+/// Returns `nixos-rebuild switch --elevate=sudo --flake <repo>#<hostname> --show-trace`.
+/// Evaluation runs as the invoking user; only activation is elevated. When
+/// `fast` is true, `--no-reexec` skips the self re-exec evaluation.
 pub fn nixRebuild(
     allocator: std.mem.Allocator,
     repo: []const u8,
     hostname: []const u8,
+    fast: bool,
 ) ![]const u8 {
     std.debug.assert(repo.len > 0);
     std.debug.assert(hostname.len > 0);
+    if (fast) {
+        return std.fmt.allocPrint(
+            allocator,
+            "nixos-rebuild switch --elevate=sudo --no-reexec" ++
+                " --flake {s}#{s} --show-trace",
+            .{ repo, hostname },
+        );
+    }
     return std.fmt.allocPrint(
         allocator,
-        "sudo nixos-rebuild switch --flake {s}#{s} --show-trace",
+        "nixos-rebuild switch --elevate=sudo --flake {s}#{s} --show-trace",
         .{ repo, hostname },
     );
 }
@@ -85,14 +109,23 @@ test "command strings" {
     const s3 = try gitAdd(alloc, "/repo");
     defer alloc.free(s3);
     try std.testing.expectEqualStrings("git -C /repo add .", s3);
-    const s4 = try nixUpdate(alloc, "/repo");
+    const s4 = try nixUpdate(alloc, "/repo", null);
     defer alloc.free(s4);
     try std.testing.expectEqualStrings("nix flake update --flake /repo", s4);
-    const s5 = try nixRebuild(alloc, "/repo", "host");
+    const s4i = try nixUpdate(alloc, "/repo", "nixpkgs");
+    defer alloc.free(s4i);
+    try std.testing.expectEqualStrings("nix flake update --flake /repo nixpkgs", s4i);
+    const s5 = try nixRebuild(alloc, "/repo", "host", false);
     defer alloc.free(s5);
     try std.testing.expectEqualStrings(
-        "sudo nixos-rebuild switch --flake /repo#host --show-trace",
+        "nixos-rebuild switch --elevate=sudo --flake /repo#host --show-trace",
         s5,
+    );
+    const s5f = try nixRebuild(alloc, "/repo", "host", true);
+    defer alloc.free(s5f);
+    try std.testing.expectEqualStrings(
+        "nixos-rebuild switch --elevate=sudo --no-reexec --flake /repo#host --show-trace",
+        s5f,
     );
     const s6 = try nixKeep(alloc, 5);
     defer alloc.free(s6);

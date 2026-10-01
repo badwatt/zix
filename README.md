@@ -93,7 +93,8 @@ Autodoc uses `///` (declarations) and `//!` (module-level) comments. No doc comm
  -r : set repo path (default is $HOME/.dotfiles)
  -n : set hostname (default is OS hostname)
  -k : set generations to keep (default is 10)
- -u : set update to true (default is false)
+ -u [input] : update flake inputs, all or a single one (default is false)
+ -f : skip nixos-rebuild re-exec for a faster rebuild (default is false)
  -d : set diff to true (default is false)
  -h, help : Display this help message
  -v, version : Display the current version
