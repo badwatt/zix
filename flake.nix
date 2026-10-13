@@ -13,7 +13,7 @@
     (flake-utils.lib.eachDefaultSystem (
       system:
       let
-        env = zig2nix.outputs.zig-env.${system} { zig = zig2nix.outputs.packages.${system}.zig-0_16_0; };
+        env = zig2nix.outputs.zig-env.${system} { zig = zig2nix.outputs.packages.${system}.zig-0_17_0; };
       in
       with builtins;
       with env.pkgs.lib;

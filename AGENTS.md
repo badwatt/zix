@@ -18,7 +18,7 @@
 
 ## Technical Constraints
 
-- Zig 0.16.0+
+- Zig 0.17.0+
 - Dependency injection via `Deps` struct.
 - No hardcoded stdout/stdin.
 - `use_llvm = true` on test binary for kcov.

@@ -6,7 +6,7 @@ CLI tool for managing NixOS configuration.
 
 ## Requirements
 
-- **Zig 0.16.0** or later
+- **Zig 0.17.0** or later
 - **Nix** (for nix-shell, kcov)
 
 ## Installation
@@ -68,7 +68,7 @@ All tasks via `zig build`:
 
 ```sh
 zig build coverage
-# 100.0% (423/423 lines)
+# 100.0% (448/448 lines)
 ```
 
 Tests run with LLVM backend (`.use_llvm = true`) for accurate DWARF instrumentation.

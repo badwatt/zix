@@ -85,11 +85,11 @@ fn printConfigLine(
 /// The last field omits the trailing newline.
 pub fn configPrint(writer: *std.Io.Writer, config: @import("../app/config.zig").Config) !void {
     std.debug.assert(config.repo.len > 0);
-    const fields = @typeInfo(@TypeOf(config)).@"struct".fields;
-    inline for (fields, 0..) |field, i| {
-        const is_last = i == fields.len - 1;
-        const value = @field(config, field.name);
-        try printConfigLine(writer, field.name, value, .{ .new_line = !is_last });
+    const field_names = @typeInfo(@TypeOf(config)).@"struct".field_names;
+    inline for (field_names, 0..) |name, i| {
+        const is_last = i == field_names.len - 1;
+        const value = @field(config, name);
+        try printConfigLine(writer, name, value, .{ .new_line = !is_last });
     }
 }
 

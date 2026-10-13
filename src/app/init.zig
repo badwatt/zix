@@ -227,7 +227,7 @@ test "run flag branches" {
     for (cases) |tc| {
         fba.reset();
         var static_alloc = StaticAllocator.init(fba.allocator());
-        var buf = [_]u8{0} ** 2048;
+        var buf: [2048]u8 = @splat(0);
         var writer = std.Io.Writer.fixed(&buf);
         run(test_io, &writer, tc.args, mock_deps, &static_alloc) catch continue;
         if (tc.expect_contains) |needle| {

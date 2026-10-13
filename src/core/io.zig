@@ -44,9 +44,9 @@ test "printTo writes exact bytes" {
 }
 
 test "style constants are non-empty" {
-    const fields = @typeInfo(@This()).@"struct".fields;
-    inline for (fields) |field| {
-        const val = @field(@This(), field.name);
+    const field_names = @typeInfo(@This()).@"struct".field_names;
+    inline for (field_names) |name| {
+        const val = @field(@This(), name);
         try std.testing.expect(val.len > 0);
     }
 }

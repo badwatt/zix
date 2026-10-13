@@ -31,9 +31,9 @@ pub fn build(b: *std.Build) void {
 
     addExe(b, mod);
     addTest(b, mod);
-    const docs_install = addDocs(b, mod);
+    const docs_compile = addDocs(b, mod);
     addCoverage(b, mod, target, optimize);
-    addDocsServe(b, target, optimize, docs_install);
+    addDocsServe(b, target, optimize, docs_compile);
 }
 
 /// Builds and installs the zix executable. Adds `run` step.
@@ -47,9 +47,8 @@ fn addExe(b: *std.Build, mod: *std.Build.Module) void {
 
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
-    }
+    // Forward `zig build run -- <args>` to the executable.
+    run_cmd.addPassthruArgs();
     b.step("run", "Run the app").dependOn(&run_cmd.step);
 }
 
@@ -91,18 +90,20 @@ fn addCoverage(b: *std.Build, mod: *std.Build.Module, target: std.Build.Resolved
     });
     b.installArtifact(report_exe);
 
-    // kcov step
+    // kcov step. The install prefix is not known while configuring the build
+    // graph, so the test and report binaries are passed as positional args
+    // (`$1`, `$2`) resolved from the compile steps.
     const kcov = b.addSystemCommand(&.{ "sh", "-c" });
-    const test_bin = b.pathJoin(&.{ b.install_path, "bin", "zix-test" });
-    const report_bin = b.pathJoin(&.{ b.install_path, "bin", "coverage-report" });
-    const kcov_run = std.fmt.allocPrint(b.allocator, "rm -rf coverage && nix-shell -p kcov --run 'kcov --include-pattern=src ./coverage {s}' && {s} coverage", .{ test_bin, report_bin }) catch @panic("OOM");
-    kcov.addArg(kcov_run);
-    kcov.step.dependOn(b.getInstallStep());
+    kcov.addArg("rm -rf coverage && ZIX_TEST_BIN=\"$1\" nix-shell -p kcov --run 'kcov --include-pattern=src ./coverage \"$ZIX_TEST_BIN\"' && \"$2\" coverage");
+    kcov.addArg("zix-coverage"); // $0
+    kcov.addArtifactArg2(test_compile, .{}); // $1
+    kcov.addArtifactArg2(report_exe, .{}); // $2
     b.step("coverage", "Run tests under kcov and print line coverage").dependOn(&kcov.step);
 }
 
 /// Adds `docs` step: builds autodoc and installs to zig-out/docs/.
-fn addDocs(b: *std.Build, mod: *std.Build.Module) *std.Build.Step {
+/// Returns the docs compile step so `docs:serve` can consume its output.
+fn addDocs(b: *std.Build, mod: *std.Build.Module) *std.Build.Step.Compile {
     const compile = b.addTest(.{
         .name = "zix-docs",
         .root_module = mod,
@@ -113,12 +114,12 @@ fn addDocs(b: *std.Build, mod: *std.Build.Module) *std.Build.Step {
         .install_subdir = "docs",
     });
     b.step("docs", "Build documentation").dependOn(&install.step);
-    return &install.step;
+    return compile;
 }
 
 /// Adds `docs:serve` step: builds docs then starts a local HTTP server.
-/// The server reads files from the installed docs directory.
-fn addDocsServe(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, docs_install: *std.Build.Step) void {
+/// The server reads files from the emitted docs directory.
+fn addDocsServe(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, docs_compile: *std.Build.Step.Compile) void {
     const serve_mod = b.createModule(.{
         .root_source_file = b.path("build/serve.zig"),
         .target = target,
@@ -130,9 +131,7 @@ fn addDocsServe(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.b
     });
 
     const serve_cmd = b.addRunArtifact(serve_exe);
-    serve_cmd.addArg(b.pathJoin(&.{ b.install_path, "docs" }));
-
-    serve_cmd.step.dependOn(docs_install);
+    serve_cmd.addDirectoryArg2(docs_compile.getEmittedDocs(), .{});
 
     b.step("docs:serve", "Build docs and serve at localhost:8000").dependOn(&serve_cmd.step);
 }
