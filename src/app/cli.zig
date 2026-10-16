@@ -1,343 +1,672 @@
-//! CLI orchestration: builds commands, executes update workflow, manages git staging.
-//! Two-phase design: init (allocation allowed) → static (zero allocation).
-//! All side effects injected via Deps for testability.
+//! CLI workflow: builds argv commands and runs the update pipeline.
+//!
+//! All side effects go through the injected `Runner` and `UserIo` ports. Every
+//! step checks the exit status and aborts on failure (fail-fast), so cleanup
+//! never runs after a failed rebuild and a failed step is never reported as a
+//! success.
 
 const std = @import("std");
-const io = @import("../core/io.zig");
 const cmd = @import("../core/commands.zig");
 const process = @import("../core/process.zig");
+const ui_mod = @import("../core/ui.zig");
 const Config = @import("config.zig").Config;
 
-/// Injected side effects: shell execution, user confirmation, UI output.
-/// Each field is a function pointer enabling full mock substitution in tests.
+/// Errors the workflow surfaces so `main` can pick an exit code.
+pub const Error = error{
+    InvalidArgs,
+    InvalidConfig,
+    NotAGitRepo,
+    GitPullFailed,
+    FlakeUpdateFailed,
+    GitStatusFailed,
+    GitAddFailed,
+    RebuildFailed,
+    HostnameUnknown,
+    CleanupFailed,
+};
+
+/// Injected dependencies: a capture allocator, the command runner, the user
+/// I/O port, and the process environment.
 pub const Deps = struct {
-    /// Run a shell command. Returns exit code.
-    run: *const fn (std.Io, []const u8, process.RunOpts) anyerror!i32,
-    /// Prompt user for yes/no confirmation. `default_yes` sets default, `message` overrides prompt text.
-    confirm: *const fn (*std.Io.Writer, bool, ?[]const u8) anyerror!bool,
-    /// Print a styled section title to output.
-    printTitle: *const fn (*std.Io.Writer, []const u8) anyerror!void,
-    /// Print the full configuration summary to output.
-    configPrint: *const fn (*std.Io.Writer, Config) anyerror!void,
+    /// Allocator used for captured command output (temporary scratch).
+    allocator: std.mem.Allocator,
+    /// Command execution port.
+    runner: process.Runner,
+    /// User-facing output port.
+    ui: ui_mod.UserIo,
+    /// Environment variables (HOME / HOSTNAME).
+    environ: *std.process.Environ.Map,
 };
 
-/// Pre-built command strings. All allocation happens in buildCommands().
-/// After buildCommands() returns, zero allocation is needed.
+/// Pre-built argv commands. Allocation happens in `buildCommands`; afterwards
+/// the workflow needs no allocation of its own (capture uses scratch memory).
 pub const Commands = struct {
-    git_pull: []const u8,
-    git_diff: []const u8,
-    git_status: []const u8,
-    git_add: []const u8,
-    nix_update: []const u8,
-    nix_rebuild: []const u8,
-    nix_keep: []const u8,
-
-    /// nixDiff is a compile-time constant. No allocation needed.
-    pub const nix_diff = cmd.nixDiff;
+    git_pull: [4][]const u8,
+    git_status: [5][]const u8,
+    git_rev_parse: [5][]const u8,
+    git_add: [5][]const u8,
+    nix_update: [5][]const u8,
+    nix_rebuild: [7][]const u8,
+    nix_keep: [6][]const u8,
+    nix_gc: [2][]const u8,
+    nix_diff: [5][]const u8,
 };
 
-/// Phase 1: Init. Build all command strings. Allocation allowed.
-/// `flavor` selects the flags compatible with the installed `nixos-rebuild`.
+/// Builds every argv the workflow needs from `config` and the detected flavor.
 pub fn buildCommands(
     config: Config,
     flavor: cmd.RebuildFlavor,
     allocator: std.mem.Allocator,
 ) !Commands {
-    // Assert preconditions.
     std.debug.assert(config.repo.len > 0);
     std.debug.assert(config.hostname.len > 0);
     std.debug.assert(config.keep > 0);
 
-    return Commands{
-        .git_pull = try cmd.gitPull(allocator, config.repo),
-        .git_diff = try cmd.gitDiff(allocator, config.repo),
-        .git_status = try cmd.gitStatus(allocator, config.repo),
-        .git_add = try cmd.gitAdd(allocator, config.repo),
-        .nix_update = try cmd.nixUpdate(allocator, config.repo),
-        .nix_rebuild = try cmd.nixRebuild(allocator, config.repo, config.hostname, flavor),
-        .nix_keep = try cmd.nixKeep(allocator, config.keep),
+    return .{
+        .git_pull = cmd.gitPull(config.repo),
+        .git_status = cmd.gitStatus(config.repo),
+        .git_rev_parse = cmd.gitRevParse(config.repo),
+        .git_add = cmd.gitAdd(config.repo),
+        .nix_update = cmd.nixUpdate(config.repo),
+        .nix_rebuild = cmd.nixRebuild(
+            try cmd.formatFlake(allocator, config.repo, config.hostname),
+            flavor,
+        ),
+        .nix_keep = cmd.nixKeep(try cmd.formatKeep(allocator, config.keep)),
+        .nix_gc = cmd.nixCollectGarbage(),
+        .nix_diff = cmd.nixDiffClosures(),
     };
 }
 
-/// Phase 2: Static. Execute all operations using pre-built commands.
-/// Zero allocation in this phase.
+/// Probes the installed `nixos-rebuild` to choose compatible flags. On any
+/// error, conservatively assumes the classic implementation.
+pub fn detectFlavor(io: std.Io, deps: Deps) cmd.RebuildFlavor {
+    const code = deps.runner.probe(io, &cmd.rebuildProbe()) catch return .classic;
+    return if (code == 0) .ng else .classic;
+}
+
+/// Runs the full workflow using the pre-built commands.
 pub fn execute(
-    cli_io: std.Io,
+    io: std.Io,
     writer: *std.Io.Writer,
     config: Config,
     commands: Commands,
     deps: Deps,
-) !void {
-    // Assert preconditions: config must be valid, commands must not be empty.
+) anyerror!void {
     std.debug.assert(config.repo.len > 0);
     std.debug.assert(config.hostname.len > 0);
 
-    try deps.printTitle(writer, "ZIX Configuration");
-    try deps.configPrint(writer, config);
+    try deps.ui.title(writer, "ZIX Configuration");
+    try deps.ui.config(writer, config);
 
-    if (try deps.confirm(writer, true, null)) {
-        // Git pull.
-        try deps.printTitle(writer, "Git Pull");
-        const pull_status = try deps.run(cli_io, commands.git_pull, .{});
-        if (pull_status != 0) {
-            try io.printTo(writer, "{s}Failed to pull changes{s}\n", .{ io.Red, io.Reset });
-            return error.GitPullFailed;
-        }
+    if (!config.yes and !(try deps.ui.confirm(writer, true, null))) return;
 
-        // Nix update (optional).
-        if (config.update) {
-            try deps.printTitle(writer, "Nix Update");
-            _ = try deps.run(cli_io, commands.nix_update, .{});
-        }
+    try pull(io, writer, commands, deps);
 
-        // Stage git changes.
-        try stageGitChanges(cli_io, writer, commands, deps);
+    if (config.update) try flakeUpdate(io, writer, commands, deps);
 
-        // Nixos rebuild.
-        try deps.printTitle(writer, "Nixos Rebuild");
-        _ = try deps.run(cli_io, commands.nix_rebuild, .{});
-        _ = try deps.run(cli_io, commands.nix_keep, .{});
+    try stage(io, writer, config, commands, deps);
+    try rebuild(io, writer, config, commands, deps);
+    try cleanup(io, writer, commands, deps);
 
-        // Nix diff (optional).
-        if (config.diff) {
-            try deps.printTitle(writer, "Nix Diff");
-            _ = try deps.run(cli_io, Commands.nix_diff, .{});
-        }
+    if (config.diff) try showDiff(io, writer, commands, deps);
+}
+
+/// Verifies the repo is a git work tree, then pulls.
+fn pull(io: std.Io, writer: *std.Io.Writer, commands: Commands, deps: Deps) anyerror!void {
+    try deps.ui.title(writer, "Git Pull");
+    if (try deps.runner.probe(io, &commands.git_rev_parse) != 0) {
+        try deps.ui.err(writer, "Repository is not a git working tree");
+        return Error.NotAGitRepo;
+    }
+    if (try deps.runner.run(io, &commands.git_pull) != 0) {
+        try deps.ui.err(writer, "Failed to pull changes");
+        return Error.GitPullFailed;
     }
 }
 
-/// Check for unstaged changes via git-diff, prompt user, optionally git-add.
-/// Returns silently if no changes detected.
-fn stageGitChanges(
-    cli_io: std.Io,
+/// Runs `nix flake update`.
+fn flakeUpdate(io: std.Io, writer: *std.Io.Writer, commands: Commands, deps: Deps) anyerror!void {
+    try deps.ui.title(writer, "Nix Update");
+    if (try deps.runner.run(io, &commands.nix_update) != 0) {
+        try deps.ui.err(writer, "Failed to update flake inputs");
+        return Error.FlakeUpdateFailed;
+    }
+}
+
+/// Detects changes (including untracked files) and, if confirmed, stages them.
+fn stage(
+    io: std.Io,
     writer: *std.Io.Writer,
+    config: Config,
     commands: Commands,
     deps: Deps,
-) !void {
-    // Assert preconditions: command strings must have been built.
-    std.debug.assert(commands.git_diff.len > 0);
+) anyerror!void {
+    const status = try deps.runner.capture(io, deps.allocator, &commands.git_status);
+    defer status.deinit(deps.allocator);
+    if (status.code != 0) {
+        try deps.ui.err(writer, "Failed to read repository status");
+        return Error.GitStatusFailed;
+    }
+    if (std.mem.trim(u8, status.stdout, " \t\r\n").len == 0) return;
 
-    // diff --exit-code returns 1 when there are unstaged changes.
-    const has_changes = try deps.run(cli_io, commands.git_diff, .{ .output = false });
-    if (has_changes != 1) return;
+    try deps.ui.title(writer, "Git Changes");
+    try deps.ui.output(writer, status.stdout);
 
-    try deps.printTitle(writer, "Git Changes");
-    _ = try deps.run(cli_io, commands.git_status, .{});
-
-    if (try deps.confirm(
+    if (!config.yes and !(try deps.ui.confirm(
         writer,
         true,
         "Do you want to add these changes to the stage?",
-    )) {
-        _ = deps.run(cli_io, commands.git_add, .{}) catch |err| {
-            try io.printTo(
-                writer,
-                "{s}Failed to add changes to the stage: {}{s}\n",
-                .{ io.Red, err, io.Reset },
-            );
-            return;
-        };
-        try io.printTo(
-            writer,
-            "{s}Changes added to git stage successfully{s}\n",
-            .{ io.Green, io.Reset },
-        );
-    } else {
-        try io.printTo(
-            writer,
-            "{s}Changes not added to stage{s}\n",
-            .{ io.Red, io.Reset },
-        );
+    ))) {
+        try deps.ui.err(writer, "Changes not added to stage");
+        return;
+    }
+
+    if (try deps.runner.run(io, &commands.git_add) != 0) {
+        try deps.ui.err(writer, "Failed to add changes to the stage");
+        return Error.GitAddFailed;
+    }
+    try deps.ui.success(writer, "Changes added to git stage successfully");
+}
+
+/// Rebuilds and switches the system.
+fn rebuild(io: std.Io, writer: *std.Io.Writer, config: Config, commands: Commands, deps: Deps) anyerror!void {
+    if (std.mem.eql(u8, config.hostname, "unknown")) {
+        try deps.ui.err(writer, "Could not determine hostname; pass --hostname");
+        return Error.HostnameUnknown;
+    }
+    try deps.ui.title(writer, "Nixos Rebuild");
+    if (try deps.runner.run(io, &commands.nix_rebuild) != 0) {
+        try deps.ui.err(writer, "Nixos rebuild failed");
+        return Error.RebuildFailed;
     }
 }
 
-// --- Test Mocks ---
+/// Prunes old generations and frees unreferenced store paths.
+fn cleanup(io: std.Io, writer: *std.Io.Writer, commands: Commands, deps: Deps) anyerror!void {
+    if (try deps.runner.run(io, &commands.nix_keep) != 0) {
+        try deps.ui.err(writer, "Cleanup failed");
+        return Error.CleanupFailed;
+    }
+    if (try deps.runner.run(io, &commands.nix_gc) != 0) {
+        try deps.ui.err(writer, "Cleanup failed");
+        return Error.CleanupFailed;
+    }
+}
 
-/// Returns 1 for git-diff commands (simulating unstaged changes), 0 otherwise.
-fn mockRun(_: std.Io, command: []const u8, _: process.RunOpts) anyerror!i32 {
-    if (std.mem.startsWith(u8, command, "git -C")) {
-        if (std.mem.indexOf(u8, command, "diff --exit-code") != null) return 1;
+/// Shows the closure diff from the last `Version` line onward.
+fn showDiff(io: std.Io, writer: *std.Io.Writer, commands: Commands, deps: Deps) anyerror!void {
+    try deps.ui.title(writer, "Nix Diff");
+    const output = try deps.runner.capture(io, deps.allocator, &commands.nix_diff);
+    defer output.deinit(deps.allocator);
+    const tail = cmd.tailFromLastVersion(output.stdout);
+    try deps.ui.output(writer, tail);
+    if (tail.len > 0 and tail[tail.len - 1] != '\n') {
+        try writer.writeByte('\n');
+        try writer.flush();
+    }
+}
+
+/// Human-readable message for an error surfaced by the workflow.
+pub fn errorMessage(err: anyerror) []const u8 {
+    return switch (err) {
+        error.InvalidArgs => "Invalid arguments",
+        error.InvalidConfig => "Invalid configuration",
+        error.NotAGitRepo => "Repository is not a git working tree",
+        error.GitPullFailed => "Failed to pull changes",
+        error.FlakeUpdateFailed => "Failed to update flake inputs",
+        error.GitStatusFailed => "Failed to read repository status",
+        error.GitAddFailed => "Failed to add changes to the stage",
+        error.RebuildFailed => "Nixos rebuild failed",
+        error.HostnameUnknown => "Could not determine hostname; pass --hostname",
+        error.CleanupFailed => "Cleanup failed",
+        else => "Unexpected error",
+    };
+}
+
+/// Process exit code for an error: 2 for invalid usage, 1 otherwise.
+pub fn exitCode(err: anyerror) u8 {
+    return switch (err) {
+        error.InvalidArgs, error.InvalidConfig => 2,
+        else => 1,
+    };
+}
+
+// --- Test mocks ---
+
+var fail_needle: ?[]const u8 = null;
+var capture_code: i32 = 0;
+var capture_output: []const u8 = "";
+var probe_result: i32 = 0;
+var probe_error: bool = false;
+var confirm_count: u32 = 0;
+var confirm_false_at: u32 = 0;
+var last_error: []const u8 = "";
+var last_success: []const u8 = "";
+var last_output: []const u8 = "";
+var output_copy: [1024]u8 = undefined;
+var output_len: usize = 0;
+
+fn resetMocks() void {
+    fail_needle = null;
+    capture_code = 0;
+    capture_output = "";
+    probe_result = 0;
+    probe_error = false;
+    confirm_count = 0;
+    confirm_false_at = 0;
+    last_error = "";
+    last_success = "";
+    output_len = 0;
+    last_output = "";
+}
+
+/// True when any argv element equals `needle`.
+fn hasArg(argv: process.Runner.Command, needle: []const u8) bool {
+    for (argv) |arg| {
+        if (std.mem.eql(u8, arg, needle)) return true;
+    }
+    return false;
+}
+
+fn mockRun(_: ?*anyopaque, _: std.Io, argv: process.Runner.Command) anyerror!i32 {
+    if (fail_needle) |needle| {
+        if (hasArg(argv, needle)) return 1;
     }
     return 0;
 }
 
-/// Tracks call count. Returns true for all calls except the second.
-var confirm_call_count: u32 = 0;
-fn mockConfirmCounting(
-    _: *std.Io.Writer,
-    _: bool,
-    _: ?[]const u8,
-) anyerror!bool {
-    confirm_call_count += 1;
-    return confirm_call_count != 2;
+fn mockCapture(
+    _: ?*anyopaque,
+    _: std.Io,
+    allocator: std.mem.Allocator,
+    _: process.Runner.Command,
+) anyerror!process.Capture {
+    const out = try allocator.dupe(u8, capture_output);
+    return .{ .code = capture_code, .stdout = out, .stderr = &.{} };
 }
 
-/// Always confirms yes.
-fn mockConfirmTrue(
-    _: *std.Io.Writer,
-    _: bool,
-    _: ?[]const u8,
-) anyerror!bool {
+fn mockProbe(_: ?*anyopaque, _: std.Io, _: process.Runner.Command) anyerror!i32 {
+    if (probe_error) return error.MockError;
+    return probe_result;
+}
+
+fn mockTitle(_: *std.Io.Writer, _: []const u8) anyerror!void {}
+fn mockConfig(_: *std.Io.Writer, _: Config) anyerror!void {}
+fn mockError(_: *std.Io.Writer, msg: []const u8) anyerror!void {
+    last_error = msg;
+}
+fn mockSuccess(_: *std.Io.Writer, msg: []const u8) anyerror!void {
+    last_success = msg;
+}
+fn mockOutput(_: *std.Io.Writer, out: []const u8) anyerror!void {
+    const n = @min(out.len, output_copy.len);
+    @memcpy(output_copy[0..n], out[0..n]);
+    output_len = n;
+    last_output = output_copy[0..output_len];
+}
+fn mockConfirm(_: *std.Io.Writer, _: bool, _: ?[]const u8) anyerror!bool {
+    confirm_count += 1;
+    if (confirm_false_at != 0 and confirm_count == confirm_false_at) return false;
     return true;
 }
 
-/// Always declines (returns false).
-fn mockConfirmFalse(
-    _: *std.Io.Writer,
-    _: bool,
-    _: ?[]const u8,
-) anyerror!bool {
-    return false;
+fn testDeps(allocator: std.mem.Allocator, environ: *std.process.Environ.Map) Deps {
+    return .{
+        .allocator = allocator,
+        .runner = .{ .runFn = mockRun, .captureFn = mockCapture, .probeFn = mockProbe },
+        .ui = .{
+            .title = mockTitle,
+            .confirm = mockConfirm,
+            .err = mockError,
+            .success = mockSuccess,
+            .output = mockOutput,
+            .config = mockConfig,
+        },
+        .environ = environ,
+    };
 }
 
-/// No-op title printer for tests.
-fn mockPrintTitle(_: *std.Io.Writer, _: []const u8) anyerror!void {}
-
-/// No-op config printer for tests.
-fn mockConfigPrint(_: *std.Io.Writer, _: Config) anyerror!void {}
+fn testConfig(hostname: []const u8) Config {
+    var config = Config.defaults(hostname);
+    config.repo = "/repo";
+    return config;
+}
 
 // --- Tests ---
 
-/// Helper: build a minimal Config with given flags.
-fn testConfig(update: bool, diff: bool) Config {
-    return Config{
-        .repo = "r",
-        .hostname = "h",
-        .keep = 1,
-        .update = update,
-        .diff = diff,
-    };
+test "buildCommands populates every field" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const commands = try buildCommands(testConfig("host"), .ng, arena.allocator());
+    try std.testing.expectEqualStrings("git", commands.git_pull[0]);
+    try std.testing.expectEqualStrings("--porcelain", commands.git_status[4]);
+    try std.testing.expectEqualStrings("--is-inside-work-tree", commands.git_rev_parse[4]);
+    try std.testing.expectEqualStrings(".", commands.git_add[4]);
+    try std.testing.expectEqualStrings("/repo", commands.nix_update[4]);
+    try std.testing.expectEqualStrings("/repo#host", commands.nix_rebuild[5]);
+    try std.testing.expectEqualStrings("--elevate=sudo", commands.nix_rebuild[2]);
+    try std.testing.expectEqualStrings("+10", commands.nix_keep[5]);
+    try std.testing.expectEqualStrings("nix-collect-garbage", commands.nix_gc[1]);
+    try std.testing.expectEqualStrings("diff-closures", commands.nix_diff[2]);
 }
 
-test "buildCommands reflects flavor" {
-    var memory: [4096]u8 = undefined;
-    var fba = std.heap.FixedBufferAllocator.init(&memory);
-    const allocator = fba.allocator();
+test "detectFlavor picks compatible flavor" {
+    var environ = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ.deinit();
+    const deps = testDeps(std.testing.allocator, &environ);
+    const io = std.testing.io;
 
-    const config = testConfig(true, false);
+    resetMocks();
+    probe_result = 0;
+    try std.testing.expectEqual(cmd.RebuildFlavor.ng, detectFlavor(io, deps));
 
-    const ng = try buildCommands(config, .ng, allocator);
-    try std.testing.expect(std.mem.indexOf(u8, ng.nix_rebuild, "--elevate=sudo") != null);
-    try std.testing.expect(std.mem.indexOf(u8, ng.nix_rebuild, "--no-reexec") != null);
+    resetMocks();
+    probe_result = 1;
+    try std.testing.expectEqual(cmd.RebuildFlavor.classic, detectFlavor(io, deps));
 
-    const classic = try buildCommands(config, .classic, allocator);
-    try std.testing.expect(std.mem.indexOf(u8, classic.nix_rebuild, "sudo nixos-rebuild") != null);
-    try std.testing.expect(std.mem.indexOf(u8, classic.nix_rebuild, "--fast") != null);
+    resetMocks();
+    probe_error = true;
+    try std.testing.expectEqual(cmd.RebuildFlavor.classic, detectFlavor(io, deps));
 }
 
-test "execute branches" {
-    var memory: [4096]u8 = undefined;
-    var fba = std.heap.FixedBufferAllocator.init(&memory);
-    const allocator = fba.allocator();
+test "execute happy path needs no confirmations when yes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var environ = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ.deinit();
+    resetMocks();
 
-    var buf: [4096]u8 = undefined;
+    var config = testConfig("host");
+    config.yes = true;
+    const commands = try buildCommands(config, .ng, arena.allocator());
+
+    var buf: [512]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buf);
-    const cli_io = std.testing.io;
+    try execute(std.testing.io, &writer, config, commands, testDeps(arena.allocator(), &environ));
+    try std.testing.expectEqual(@as(u32, 0), confirm_count);
+}
 
-    const deps = Deps{
-        .run = mockRun,
-        .confirm = mockConfirmTrue,
-        .printTitle = mockPrintTitle,
-        .configPrint = mockConfigPrint,
-    };
+test "execute aborts when initial confirmation is declined" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var environ = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ.deinit();
+    resetMocks();
+    confirm_false_at = 1;
 
-    // Phase 1: build commands.
-    const commands = try buildCommands(testConfig(true, true), .ng, allocator);
+    const config = testConfig("host");
+    const commands = try buildCommands(config, .ng, arena.allocator());
+    var buf: [512]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    try execute(std.testing.io, &writer, config, commands, testDeps(arena.allocator(), &environ));
+    try std.testing.expectEqual(@as(u32, 1), confirm_count);
+}
 
-    // Phase 2: execute (zero alloc from here).
+test "execute fails when repo is not a git work tree" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var environ = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ.deinit();
+    resetMocks();
+    probe_result = 1;
 
-    // confirm false => early return.
-    const no_deps = Deps{
-        .run = mockRun,
-        .confirm = mockConfirmFalse,
-        .printTitle = mockPrintTitle,
-        .configPrint = mockConfigPrint,
-    };
-    try execute(cli_io, &writer, testConfig(false, false), commands, no_deps);
-
-    // git pull fails.
-    const fail_deps = Deps{
-        .run = struct {
-            fn f(_: std.Io, _: []const u8, _: process.RunOpts) anyerror!i32 {
-                return 1;
-            }
-        }.f,
-        .confirm = mockConfirmTrue,
-        .printTitle = mockPrintTitle,
-        .configPrint = mockConfigPrint,
-    };
+    var config = testConfig("host");
+    config.yes = true;
+    const commands = try buildCommands(config, .ng, arena.allocator());
+    var buf: [512]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
     try std.testing.expectError(
-        error.GitPullFailed,
-        execute(cli_io, &writer, testConfig(false, false), commands, fail_deps),
+        Error.NotAGitRepo,
+        execute(std.testing.io, &writer, config, commands, testDeps(arena.allocator(), &environ)),
     );
-
-    // update + diff + git changes + add.
-    try execute(cli_io, &writer, testConfig(true, true), commands, deps);
-
-    // no git changes (diff returns 0).
-    const no_changes_deps = Deps{
-        .run = struct {
-            fn f(_: std.Io, _: []const u8, _: process.RunOpts) anyerror!i32 {
-                return 0;
-            }
-        }.f,
-        .confirm = mockConfirmTrue,
-        .printTitle = mockPrintTitle,
-        .configPrint = mockConfigPrint,
-    };
-    try execute(cli_io, &writer, testConfig(false, false), commands, no_changes_deps);
+    try std.testing.expectEqualStrings("Repository is not a git working tree", last_error);
 }
 
-test "execute git add failure" {
-    var memory: [4096]u8 = undefined;
-    var fba = std.heap.FixedBufferAllocator.init(&memory);
-    const allocator = fba.allocator();
+test "execute fails when git pull fails" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var environ = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ.deinit();
+    resetMocks();
+    fail_needle = "pull";
 
-    var buf: [4096]u8 = undefined;
+    var config = testConfig("host");
+    config.yes = true;
+    const commands = try buildCommands(config, .ng, arena.allocator());
+    var buf: [512]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buf);
-    const cli_io = std.testing.io;
-
-    const commands = try buildCommands(testConfig(false, true), .ng, allocator);
-
-    const add_fail_deps = Deps{
-        .run = struct {
-            fn f(_: std.Io, c: []const u8, _: process.RunOpts) anyerror!i32 {
-                if (std.mem.indexOf(u8, c, "add .") != null) return error.MockError;
-                if (std.mem.indexOf(u8, c, "diff --exit-code") != null) return 1;
-                return 0;
-            }
-        }.f,
-        .confirm = mockConfirmTrue,
-        .printTitle = mockPrintTitle,
-        .configPrint = mockConfigPrint,
-    };
-
-    try execute(cli_io, &writer, testConfig(false, true), commands, add_fail_deps);
-    const out = std.mem.sliceTo(&buf, 0);
-    try std.testing.expect(std.mem.indexOf(u8, out, "Failed to add changes") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "successfully") == null);
+    try std.testing.expectError(
+        Error.GitPullFailed,
+        execute(std.testing.io, &writer, config, commands, testDeps(arena.allocator(), &environ)),
+    );
 }
 
-test "execute decline add changes" {
-    var memory: [4096]u8 = undefined;
-    var fba = std.heap.FixedBufferAllocator.init(&memory);
-    const allocator = fba.allocator();
+test "execute fails when flake update fails" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var environ = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ.deinit();
+    resetMocks();
+    fail_needle = "update";
 
-    var buf: [4096]u8 = undefined;
+    var config = testConfig("host");
+    config.yes = true;
+    config.update = true;
+    const commands = try buildCommands(config, .ng, arena.allocator());
+    var buf: [512]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buf);
-    const cli_io = std.testing.io;
+    try std.testing.expectError(
+        Error.FlakeUpdateFailed,
+        execute(std.testing.io, &writer, config, commands, testDeps(arena.allocator(), &environ)),
+    );
+}
 
-    const commands = try buildCommands(testConfig(false, true), .ng, allocator);
+test "execute fails when git status cannot be read" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var environ = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ.deinit();
+    resetMocks();
+    capture_code = 2;
 
-    confirm_call_count = 0;
-    const decline_deps = Deps{
-        .run = mockRun,
-        .confirm = mockConfirmCounting,
-        .printTitle = mockPrintTitle,
-        .configPrint = mockConfigPrint,
-    };
-    try execute(cli_io, &writer, testConfig(false, true), commands, decline_deps);
-    const out = std.mem.sliceTo(&buf, 0);
-    try std.testing.expect(std.mem.indexOf(u8, out, "not added") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "successfully") == null);
+    var config = testConfig("host");
+    config.yes = true;
+    const commands = try buildCommands(config, .ng, arena.allocator());
+    var buf: [512]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    try std.testing.expectError(
+        Error.GitStatusFailed,
+        execute(std.testing.io, &writer, config, commands, testDeps(arena.allocator(), &environ)),
+    );
+}
+
+test "execute stages changes when confirmed" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var environ = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ.deinit();
+    resetMocks();
+    capture_output = " M src/main.zig\n";
+
+    var config = testConfig("host");
+    config.yes = true;
+    const commands = try buildCommands(config, .ng, arena.allocator());
+    var buf: [1024]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    try execute(std.testing.io, &writer, config, commands, testDeps(arena.allocator(), &environ));
+    try std.testing.expectEqualStrings(" M src/main.zig\n", last_output);
+    try std.testing.expectEqualStrings("Changes added to git stage successfully", last_success);
+}
+
+test "execute declines staging changes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var environ = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ.deinit();
+    resetMocks();
+    capture_output = " M file\n";
+    confirm_false_at = 2; // initial prompt yes, staging prompt no.
+
+    const config = testConfig("host");
+    const commands = try buildCommands(config, .ng, arena.allocator());
+    var buf: [1024]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    try execute(std.testing.io, &writer, config, commands, testDeps(arena.allocator(), &environ));
+    try std.testing.expectEqualStrings("Changes not added to stage", last_error);
+}
+
+test "execute fails when git add fails" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var environ = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ.deinit();
+    resetMocks();
+    capture_output = " M file\n";
+    fail_needle = "add";
+
+    var config = testConfig("host");
+    config.yes = true;
+    const commands = try buildCommands(config, .ng, arena.allocator());
+    var buf: [1024]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    try std.testing.expectError(
+        Error.GitAddFailed,
+        execute(std.testing.io, &writer, config, commands, testDeps(arena.allocator(), &environ)),
+    );
+}
+
+test "execute fails when hostname is unknown" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var environ = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ.deinit();
+    resetMocks();
+
+    var config = testConfig("unknown");
+    config.yes = true;
+    const commands = try buildCommands(config, .ng, arena.allocator());
+    var buf: [512]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    try std.testing.expectError(
+        Error.HostnameUnknown,
+        execute(std.testing.io, &writer, config, commands, testDeps(arena.allocator(), &environ)),
+    );
+}
+
+test "execute fails when rebuild fails" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var environ = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ.deinit();
+    resetMocks();
+    fail_needle = "switch";
+
+    var config = testConfig("host");
+    config.yes = true;
+    const commands = try buildCommands(config, .ng, arena.allocator());
+    var buf: [512]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    try std.testing.expectError(
+        Error.RebuildFailed,
+        execute(std.testing.io, &writer, config, commands, testDeps(arena.allocator(), &environ)),
+    );
+}
+
+test "execute fails when generation pruning fails" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var environ = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ.deinit();
+    resetMocks();
+    fail_needle = "nix-env";
+
+    var config = testConfig("host");
+    config.yes = true;
+    const commands = try buildCommands(config, .ng, arena.allocator());
+    var buf: [512]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    try std.testing.expectError(
+        Error.CleanupFailed,
+        execute(std.testing.io, &writer, config, commands, testDeps(arena.allocator(), &environ)),
+    );
+}
+
+test "execute fails when garbage collection fails" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var environ = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ.deinit();
+    resetMocks();
+    fail_needle = "nix-collect-garbage";
+
+    var config = testConfig("host");
+    config.yes = true;
+    const commands = try buildCommands(config, .ng, arena.allocator());
+    var buf: [512]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    try std.testing.expectError(
+        Error.CleanupFailed,
+        execute(std.testing.io, &writer, config, commands, testDeps(arena.allocator(), &environ)),
+    );
+}
+
+test "execute shows diff when requested" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var environ = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ.deinit();
+    resetMocks();
+    capture_output = "noise\nVersion 2\nchanged\n";
+
+    var config = testConfig("host");
+    config.yes = true;
+    config.diff = true;
+    const commands = try buildCommands(config, .ng, arena.allocator());
+    var buf: [1024]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    try execute(std.testing.io, &writer, config, commands, testDeps(arena.allocator(), &environ));
+    try std.testing.expectEqualStrings("Version 2\nchanged\n", last_output);
+}
+
+test "execute appends newline when diff tail lacks one" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var environ = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ.deinit();
+    resetMocks();
+    capture_output = "Version 2";
+
+    var config = testConfig("host");
+    config.yes = true;
+    config.diff = true;
+    const commands = try buildCommands(config, .ng, arena.allocator());
+    var buf: [1024]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    try execute(std.testing.io, &writer, config, commands, testDeps(arena.allocator(), &environ));
+    try std.testing.expect(std.mem.endsWith(u8, buf[0..writer.end], "\n"));
+}
+
+test "errorMessage and exitCode cover every variant" {
+    try std.testing.expectEqualStrings("Invalid arguments", errorMessage(error.InvalidArgs));
+    try std.testing.expectEqualStrings("Invalid configuration", errorMessage(error.InvalidConfig));
+    try std.testing.expectEqualStrings("Repository is not a git working tree", errorMessage(error.NotAGitRepo));
+    try std.testing.expectEqualStrings("Failed to pull changes", errorMessage(error.GitPullFailed));
+    try std.testing.expectEqualStrings("Failed to update flake inputs", errorMessage(error.FlakeUpdateFailed));
+    try std.testing.expectEqualStrings("Failed to read repository status", errorMessage(error.GitStatusFailed));
+    try std.testing.expectEqualStrings("Failed to add changes to the stage", errorMessage(error.GitAddFailed));
+    try std.testing.expectEqualStrings("Nixos rebuild failed", errorMessage(error.RebuildFailed));
+    try std.testing.expectEqualStrings("Could not determine hostname; pass --hostname", errorMessage(error.HostnameUnknown));
+    try std.testing.expectEqualStrings("Cleanup failed", errorMessage(error.CleanupFailed));
+    try std.testing.expectEqualStrings("Unexpected error", errorMessage(error.MockError));
+
+    try std.testing.expectEqual(@as(u8, 2), exitCode(error.InvalidArgs));
+    try std.testing.expectEqual(@as(u8, 2), exitCode(error.InvalidConfig));
+    try std.testing.expectEqual(@as(u8, 1), exitCode(error.GitPullFailed));
+    try std.testing.expectEqual(@as(u8, 1), exitCode(error.MockError));
+}
+
+test "hasArg matches and misses" {
+    try std.testing.expect(hasArg(&.{ "git", "pull" }, "pull"));
+    try std.testing.expect(!hasArg(&.{ "git", "pull" }, "add"));
 }

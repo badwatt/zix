@@ -1,14 +1,66 @@
-//! Terminal UI functions: titles, help, version, config display, and confirmation prompts.
+//! Terminal UI: titles, help, version, config display, prompts, and status
+//! messages. Also defines the `UserIo` port used by the workflow.
 //!
 //! All output uses `io.printTo` for immediate flush. `confirm` reads
 //! stdin byte-by-byte via posix.read to avoid buffering issues.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const io = @import("io.zig");
+const Config = @import("../app/config.zig").Config;
 const equal = std.mem.eql;
 
 /// Maximum border width for printed titles.
 const MAX_TITLE_LEN: u32 = 128;
+
+/// User-facing I/O port. `terminal` is the production implementation; tests
+/// and `--dry-run` inject their own.
+pub const UserIo = struct {
+    title: *const fn (*std.Io.Writer, []const u8) anyerror!void,
+    confirm: *const fn (*std.Io.Writer, bool, ?[]const u8) anyerror!bool,
+    err: *const fn (*std.Io.Writer, []const u8) anyerror!void,
+    success: *const fn (*std.Io.Writer, []const u8) anyerror!void,
+    output: *const fn (*std.Io.Writer, []const u8) anyerror!void,
+    config: *const fn (*std.Io.Writer, Config) anyerror!void,
+};
+
+/// Production `UserIo` writing to the caller-provided writer.
+///
+/// The stdin-reading `confirm` is replaced by a stub under `zig build test`:
+/// exercising it would require taking over fd 0, which the test runner's
+/// `--listen=-` protocol owns. `confirmAlloc` covers the parsing logic.
+pub const terminal = UserIo{
+    .title = printTitle,
+    .confirm = if (builtin.is_test) testConfirm else confirm,
+    .err = printError,
+    .success = printSuccess,
+    .output = printOutput,
+    .config = configPrint,
+};
+
+fn testConfirm(_: *std.Io.Writer, _: bool, _: ?[]const u8) anyerror!bool {
+    return true;
+}
+
+// --- Formatting ---
+
+/// Prints a red error message.
+pub fn printError(writer: *std.Io.Writer, msg: []const u8) !void {
+    std.debug.assert(msg.len > 0);
+    try io.printTo(writer, "{s}{s}{s}\n", .{ io.Red, msg, io.Reset });
+}
+
+/// Prints a green success message.
+pub fn printSuccess(writer: *std.Io.Writer, msg: []const u8) !void {
+    std.debug.assert(msg.len > 0);
+    try io.printTo(writer, "{s}{s}{s}\n", .{ io.Green, msg, io.Reset });
+}
+
+/// Prints captured command output verbatim.
+pub fn printOutput(writer: *std.Io.Writer, output: []const u8) !void {
+    try writer.writeAll(output);
+    try writer.flush();
+}
 
 /// Prints a bordered, colored title with asterisk borders.
 /// Asserts text is non-empty and fits within MAX_TITLE_LEN.
@@ -35,13 +87,15 @@ pub fn printHelp(writer: *std.Io.Writer) !void {
         \\ *****************************************************
         \\  ZIX - A simple CLI tool to update your nixos system
         \\ *****************************************************
-        \\ -r : set repo path (default is $HOME/.dotfiles)
-        \\ -n : set hostname (default is OS hostname)
-        \\ -k : set generations to keep (default is 10)
-        \\ -u : set update to true (default is false)
-        \\ -d : set diff to true (default is false)
-        \\ -h, help : Display this help message
-        \\ -v, version : Display the current version
+        \\ -r, --repo      : set repo path (default is $HOME/.dotfiles)
+        \\ -n, --hostname  : set hostname (default is OS hostname)
+        \\ -k, --keep      : set generations to keep (default is 10)
+        \\ -u, --update    : set update to true (default is false)
+        \\ -d, --diff      : set diff to true (default is false)
+        \\ -y, --yes       : assume yes for all prompts (default is false)
+        \\     --dry-run   : print commands without executing them
+        \\ -h, --help      : Display this help message
+        \\ -v, --version   : Display the current version
         \\
         \\
     , .{});
@@ -83,7 +137,7 @@ fn printConfigLine(
 
 /// Prints all config fields with colored labels via `printConfigLine`.
 /// The last field omits the trailing newline.
-pub fn configPrint(writer: *std.Io.Writer, config: @import("../app/config.zig").Config) !void {
+pub fn configPrint(writer: *std.Io.Writer, config: Config) !void {
     std.debug.assert(config.repo.len > 0);
     const field_names = @typeInfo(@TypeOf(config)).@"struct".field_names;
     inline for (field_names, 0..) |name, i| {
@@ -179,6 +233,34 @@ fn confirmAlloc(
 
 // --- Tests ---
 
+test "io.printTo writes exact bytes" {
+    var buf: [256]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    try io.printTo(&writer, "hello {d} {s}", .{ 42, "world" });
+    try std.testing.expectEqualStrings("hello 42 world", buf[0..14]);
+}
+
+test "printError and printSuccess wrap in color" {
+    var buf: [128]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    try printError(&writer, "bad");
+    try std.testing.expect(std.mem.indexOf(u8, &buf, "bad") != null);
+    try std.testing.expect(std.mem.indexOf(u8, &buf, io.Red) != null);
+
+    var buf2: [128]u8 = undefined;
+    var writer2 = std.Io.Writer.fixed(&buf2);
+    try printSuccess(&writer2, "good");
+    try std.testing.expect(std.mem.indexOf(u8, &buf2, "good") != null);
+    try std.testing.expect(std.mem.indexOf(u8, &buf2, io.Green) != null);
+}
+
+test "printOutput writes verbatim" {
+    var buf: [32]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    try printOutput(&writer, "raw output\n");
+    try std.testing.expectEqualStrings("raw output\n", buf[0..writer.end]);
+}
+
 test "printTitle border format" {
     var buf: [256]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buf);
@@ -206,12 +288,14 @@ test "printVersion writes version" {
 test "configPrint renders all fields" {
     var buf: [1024]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buf);
-    const config = @import("../app/config.zig").Config{
+    const config = Config{
         .repo = "~/.dotfiles",
         .hostname = "nixos",
         .keep = 10,
         .update = false,
         .diff = true,
+        .yes = false,
+        .dry_run = false,
     };
     try configPrint(&writer, config);
     try std.testing.expect(std.mem.indexOf(u8, &buf, "repo") != null);
@@ -219,6 +303,25 @@ test "configPrint renders all fields" {
     try std.testing.expect(std.mem.indexOf(u8, &buf, "keep") != null);
     try std.testing.expect(std.mem.indexOf(u8, &buf, "update") != null);
     try std.testing.expect(std.mem.indexOf(u8, &buf, "diff") != null);
+}
+
+test "terminal port exposes production functions" {
+    var buf: [4096]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    try terminal.title(&writer, "T");
+    _ = try terminal.confirm(&writer, true, null);
+    try terminal.err(&writer, "e");
+    try terminal.success(&writer, "s");
+    try terminal.output(&writer, "o");
+    try terminal.config(&writer, Config{
+        .repo = "r",
+        .hostname = "h",
+        .keep = 1,
+        .update = false,
+        .diff = false,
+        .yes = false,
+        .dry_run = false,
+    });
 }
 
 test "confirm responses" {
@@ -237,7 +340,6 @@ test "confirm responses" {
         .{ .input = "\n", .default_value = false, .expected = false },
         .{ .input = "maybe\n", .default_value = true, .expected = false },
         .{ .input = "maybe\n", .default_value = false, .expected = false },
-        .{ .input = "", .default_value = true, .expected = false },
         .{ .input = "y\n", .default_value = false, .expected = true, .msg = "Sure" },
     };
     inline for (cases) |tc| {
@@ -254,10 +356,26 @@ test "confirm responses" {
     }
 }
 
-test "confirm empty input" {
+test "confirm empty input hits EndOfStream" {
     var wbuf: [512]u8 = undefined;
     var writer = std.Io.Writer.fixed(&wbuf);
-    var reader = std.Io.Reader.fixed("y\n");
+    var reader = std.Io.Reader.fixed("");
     const result = try confirmAlloc(&reader, &writer, true, null);
-    try std.testing.expectEqual(true, result);
+    try std.testing.expectEqual(false, result);
+}
+
+test "parseConfirmResponse rejects overlong line" {
+    var line: [256]u8 = undefined;
+    @memset(&line, 'x');
+    try std.testing.expectEqual(false, parseConfirmResponse(&line, true));
+}
+
+test "style constants are non-empty" {
+    const field_names = @typeInfo(@This()).@"struct".field_names;
+    inline for (field_names) |name| {
+        const val = @field(@This(), name);
+        if (@TypeOf(val) == []const u8) {
+            try std.testing.expect(val.len > 0);
+        }
+    }
 }

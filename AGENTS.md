@@ -12,14 +12,15 @@
 1. Write failing test.
 2. Make test pass with minimal code.
 3. Refactor.
-4. Run `./taskfile test` → all pass.
-5. Run `./taskfile coverage` → 100.00%.
+4. Run `zig build test` → all pass (unit + integration).
+5. Run `zig build coverage` → 100.00%.
 6. Commit.
 
 ## Technical Constraints
 
 - Zig 0.17.0+
-- Dependency injection via `Deps` struct.
+- Dependency injection via the `Deps` struct (CommandRunner + UserIo ports).
+- External commands run as argv lists, never through a shell.
 - No hardcoded stdout/stdin.
 - `use_llvm = true` on test binary for kcov.
 

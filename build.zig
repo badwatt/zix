@@ -29,15 +29,18 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
     const mod = createModule(b, target, optimize);
 
-    addExe(b, mod);
-    addTest(b, mod);
+    const exe = addExe(b, mod);
+    const test_step = b.step("test", "Run unit and integration tests");
+    addTest(b, mod, test_step);
+    addIntegrationTests(b, target, optimize, exe, test_step);
     const docs_compile = addDocs(b, mod);
     addCoverage(b, mod, target, optimize);
     addDocsServe(b, target, optimize, docs_compile);
 }
 
-/// Builds and installs the zix executable. Adds `run` step.
-fn addExe(b: *std.Build, mod: *std.Build.Module) void {
+/// Builds and installs the zix executable. Adds `run` step and returns the
+/// compile step so integration tests can depend on its output.
+fn addExe(b: *std.Build, mod: *std.Build.Module) *std.Build.Step.Compile {
     const exe = b.addExecutable(.{
         .name = "zix",
         .root_module = mod,
@@ -50,10 +53,11 @@ fn addExe(b: *std.Build, mod: *std.Build.Module) void {
     // Forward `zig build run -- <args>` to the executable.
     run_cmd.addPassthruArgs();
     b.step("run", "Run the app").dependOn(&run_cmd.step);
+    return exe;
 }
 
 /// Adds `test` step. Optionally installs test binary with `-Dtest-bin=true`.
-fn addTest(b: *std.Build, mod: *std.Build.Module) void {
+fn addTest(b: *std.Build, mod: *std.Build.Module, test_step: *std.Build.Step) void {
     const install_bin = b.option(bool, "test-bin", "Install test binary for coverage analysis") orelse false;
 
     const compile = b.addTest(.{
@@ -64,7 +68,35 @@ fn addTest(b: *std.Build, mod: *std.Build.Module) void {
     if (install_bin) b.installArtifact(compile);
 
     const run_tests = b.addRunArtifact(compile);
-    b.step("test", "Run unit tests").dependOn(&run_tests.step);
+    test_step.dependOn(&run_tests.step);
+}
+
+/// Adds integration tests that spawn the compiled binary. The binary path is
+/// injected through a generated `build_options` module.
+fn addIntegrationTests(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    exe: *std.Build.Step.Compile,
+    test_step: *std.Build.Step,
+) void {
+    const options = b.addOptions();
+    options.addOptionPath("zix_exe", exe.getEmittedBin());
+
+    const integration_mod = b.createModule(.{
+        .root_source_file = b.path("tests/integration.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    integration_mod.addImport("build_options", options.createModule());
+
+    const compile = b.addTest(.{
+        .name = "zix-integration",
+        .root_module = integration_mod,
+    });
+    const run_tests = b.addRunArtifact(compile);
+    run_tests.step.dependOn(&exe.step);
+    test_step.dependOn(&run_tests.step);
 }
 
 /// Adds `coverage` step: runs kcov via nix-shell, then prints summary

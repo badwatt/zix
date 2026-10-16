@@ -1,38 +1,42 @@
-//! Shell command builders for git and nix operations.
+//! Shell-free command builders for git and nix operations.
 //!
-//! Each function allocates and returns a shell command string.
-//! All assert preconditions (e.g., non-empty repo paths).
+//! Every builder returns an argv list (program name first), so values coming
+//! from the CLI (`repo`, `hostname`) are passed as literal arguments and can
+//! never be reinterpreted by a shell. No `sh -c`, no quoting, no injection.
 
 const std = @import("std");
 
-/// Returns `git -C <repo> pull`.
-pub fn gitPull(allocator: std.mem.Allocator, repo: []const u8) ![]const u8 {
+/// An argv list: program name first, then its arguments.
+pub const Command = []const []const u8;
+
+/// Returns the `git -C <repo> pull` argv.
+pub fn gitPull(repo: []const u8) [4][]const u8 {
     std.debug.assert(repo.len > 0);
-    return std.fmt.allocPrint(allocator, "git -C {s} pull", .{repo});
+    return .{ "git", "-C", repo, "pull" };
 }
 
-/// Returns `git -C <repo> diff --exit-code`. Exit code 1 means changes exist.
-pub fn gitDiff(allocator: std.mem.Allocator, repo: []const u8) ![]const u8 {
+/// Returns the `git -C <repo> status --porcelain` argv.
+pub fn gitStatus(repo: []const u8) [5][]const u8 {
     std.debug.assert(repo.len > 0);
-    return std.fmt.allocPrint(allocator, "git -C {s} diff --exit-code", .{repo});
+    return .{ "git", "-C", repo, "status", "--porcelain" };
 }
 
-/// Returns `git -C <repo> status --porcelain`.
-pub fn gitStatus(allocator: std.mem.Allocator, repo: []const u8) ![]const u8 {
+/// Returns the `git -C <repo> rev-parse --is-inside-work-tree` argv.
+pub fn gitRevParse(repo: []const u8) [5][]const u8 {
     std.debug.assert(repo.len > 0);
-    return std.fmt.allocPrint(allocator, "git -C {s} status --porcelain", .{repo});
+    return .{ "git", "-C", repo, "rev-parse", "--is-inside-work-tree" };
 }
 
-/// Returns `git -C <repo> add .`.
-pub fn gitAdd(allocator: std.mem.Allocator, repo: []const u8) ![]const u8 {
+/// Returns the `git -C <repo> add .` argv.
+pub fn gitAdd(repo: []const u8) [5][]const u8 {
     std.debug.assert(repo.len > 0);
-    return std.fmt.allocPrint(allocator, "git -C {s} add .", .{repo});
+    return .{ "git", "-C", repo, "add", "." };
 }
 
-/// Returns `nix flake update --flake <repo>`.
-pub fn nixUpdate(allocator: std.mem.Allocator, repo: []const u8) ![]const u8 {
+/// Returns the `nix flake update --flake <repo>` argv.
+pub fn nixUpdate(repo: []const u8) [5][]const u8 {
     std.debug.assert(repo.len > 0);
-    return std.fmt.allocPrint(allocator, "nix flake update --flake {s}", .{repo});
+    return .{ "nix", "flake", "update", "--flake", repo };
 }
 
 /// Which `nixos-rebuild` implementation is installed. The newer `-ng`
@@ -43,84 +47,212 @@ pub const RebuildFlavor = enum { classic, ng };
 
 /// Capability probe: `--elevate` exists only in the `-ng` rewrite, and
 /// `list-generations` is read-only. Exit code 0 means `-ng`.
-pub const rebuild_probe = "nixos-rebuild --elevate=none list-generations";
+pub fn rebuildProbe() [3][]const u8 {
+    return .{ "nixos-rebuild", "--elevate=none", "list-generations" };
+}
 
-/// Builds the `switch` command for the detected `nixos-rebuild` flavor.
-/// Always skips the self re-exec with the flavor-appropriate flag, so the
-/// redundant pre-build evaluation is not paid.
-pub fn nixRebuild(
-    allocator: std.mem.Allocator,
-    repo: []const u8,
-    hostname: []const u8,
-    flavor: RebuildFlavor,
-) ![]const u8 {
+/// Builds the `switch` argv for the detected flavor from the pre-formatted
+/// `<repo>#<hostname>` flake reference. Always skips the self re-exec with the
+/// flavor-appropriate flag, so the redundant pre-build evaluation is not paid.
+pub fn nixRebuild(flake: []const u8, flavor: RebuildFlavor) [7][]const u8 {
+    std.debug.assert(flake.len > 0);
+    return switch (flavor) {
+        .ng => .{
+            "nixos-rebuild",
+            "switch",
+            "--elevate=sudo",
+            "--no-reexec",
+            "--flake",
+            flake,
+            "--show-trace",
+        },
+        .classic => .{
+            "sudo",
+            "nixos-rebuild",
+            "switch",
+            "--fast",
+            "--flake",
+            flake,
+            "--show-trace",
+        },
+    };
+}
+
+/// Formats the `<repo>#<hostname>` flake reference for `--flake`.
+pub fn formatFlake(allocator: std.mem.Allocator, repo: []const u8, hostname: []const u8) ![]const u8 {
     std.debug.assert(repo.len > 0);
     std.debug.assert(hostname.len > 0);
-    const prefix: []const u8 = switch (flavor) {
-        .ng => "nixos-rebuild switch --elevate=sudo --no-reexec",
-        .classic => "sudo nixos-rebuild switch --fast",
+    return std.fmt.allocPrint(allocator, "{s}#{s}", .{ repo, hostname });
+}
+
+/// Returns the `sudo nix-env --profile <system> --delete-generations +<n>`
+/// argv from the pre-formatted `+<n>` argument.
+pub fn nixKeep(keep_arg: []const u8) [6][]const u8 {
+    std.debug.assert(keep_arg.len > 0);
+    return .{
+        "sudo",
+        "nix-env",
+        "--profile",
+        "/nix/var/nix/profiles/system",
+        "--delete-generations",
+        keep_arg,
     };
-    return std.fmt.allocPrint(
-        allocator,
-        "{s} --flake {s}#{s} --show-trace",
-        .{ prefix, repo, hostname },
-    );
 }
 
-/// Returns `sudo nix-env --profile /nix/var/nix/profiles/system --delete-generations +<n>`.
-pub fn nixKeep(
-    allocator: std.mem.Allocator,
-    generations_to_keep: u8,
-) ![]const u8 {
+/// Formats the `+<n>` argument for `--delete-generations`.
+pub fn formatKeep(allocator: std.mem.Allocator, generations_to_keep: u8) ![]const u8 {
     std.debug.assert(generations_to_keep > 0);
-    return std.fmt.allocPrint(
-        allocator,
-        "sudo nix-env --profile /nix/var/nix/profiles/system" ++ " --delete-generations +{d}",
-        .{generations_to_keep},
+    return std.fmt.allocPrint(allocator, "+{d}", .{generations_to_keep});
+}
+
+/// Returns the `sudo nix-collect-garbage` argv.
+pub fn nixCollectGarbage() [2][]const u8 {
+    return .{ "sudo", "nix-collect-garbage" };
+}
+
+/// Returns the `nix profile diff-closures --profile <system>` argv.
+pub fn nixDiffClosures() [5][]const u8 {
+    return .{
+        "nix",
+        "profile",
+        "diff-closures",
+        "--profile",
+        "/nix/var/nix/profiles/system",
+    };
+}
+
+/// Returns the tail of `output` starting at the last line containing `Version`.
+///
+/// Mirrors the former `tac | awk '/Version/{print; exit} 1' | tac` pipeline:
+/// when no such line exists, the whole output is returned unchanged.
+pub fn tailFromLastVersion(output: []const u8) []const u8 {
+    var start: ?usize = null;
+    var line_start: usize = 0;
+    var i: usize = 0;
+    while (i < output.len) : (i += 1) {
+        if (output[i] != '\n') continue;
+        if (std.mem.indexOf(u8, output[line_start..i], "Version") != null) start = line_start;
+        line_start = i + 1;
+    }
+    if (line_start < output.len and
+        std.mem.indexOf(u8, output[line_start..], "Version") != null)
+    {
+        start = line_start;
+    }
+    return if (start) |s| output[s..] else output;
+}
+
+// --- Tests ---
+
+fn expectArgv(expected: []const []const u8, actual: []const []const u8) !void {
+    try std.testing.expectEqualSlices([]const u8, expected, actual);
+}
+
+test "git commands use argv, not shell" {
+    try expectArgv(&.{ "git", "-C", "/repo", "pull" }, &gitPull("/repo"));
+    try expectArgv(&.{ "git", "-C", "/repo", "status", "--porcelain" }, &gitStatus("/repo"));
+    try expectArgv(
+        &.{ "git", "-C", "/repo", "rev-parse", "--is-inside-work-tree" },
+        &gitRevParse("/repo"),
+    );
+    try expectArgv(&.{ "git", "-C", "/repo", "add", "." }, &gitAdd("/repo"));
+}
+
+test "repo with spaces stays a single argument" {
+    const repo = "/tmp/my dotfiles";
+    try expectArgv(&.{ "git", "-C", repo, "pull" }, &gitPull(repo));
+}
+
+test "nix commands use argv, not shell" {
+    try expectArgv(&.{ "nix", "flake", "update", "--flake", "/repo" }, &nixUpdate("/repo"));
+    try expectArgv(
+        &.{ "nixos-rebuild", "--elevate=none", "list-generations" },
+        &rebuildProbe(),
+    );
+    try expectArgv(
+        &.{ "sudo", "nix-collect-garbage" },
+        &nixCollectGarbage(),
+    );
+    try expectArgv(
+        &.{
+            "nix",
+            "profile",
+            "diff-closures",
+            "--profile",
+            "/nix/var/nix/profiles/system",
+        },
+        &nixDiffClosures(),
     );
 }
 
-/// Static command string for nix profile diff-closures with awk filtering.
-const nix_diff_profile = " --profile /nix/var/nix/profiles/system";
-const nix_diff_awk = " | awk '/Version/{print; exit} 1'";
+test "nixRebuild reflects flavor" {
+    try expectArgv(
+        &.{
+            "nixos-rebuild",
+            "switch",
+            "--elevate=sudo",
+            "--no-reexec",
+            "--flake",
+            "/repo#host",
+            "--show-trace",
+        },
+        &nixRebuild("/repo#host", .ng),
+    );
+    try expectArgv(
+        &.{
+            "sudo",
+            "nixos-rebuild",
+            "switch",
+            "--fast",
+            "--flake",
+            "/repo#host",
+            "--show-trace",
+        },
+        &nixRebuild("/repo#host", .classic),
+    );
+}
 
-/// Pre-built nix diff command. No allocation needed — comptime concatenated.
-pub const nixDiff =
-    "nix profile diff-closures" ++ nix_diff_profile ++ " | tac" ++ nix_diff_awk ++ " | tac";
-
-test "command strings" {
+test "formatFlake and formatKeep allocate expected strings" {
     const alloc = std.testing.allocator;
-    const s0 = try gitPull(alloc, "/repo");
-    defer alloc.free(s0);
-    try std.testing.expectEqualStrings("git -C /repo pull", s0);
-    const s1 = try gitDiff(alloc, "/repo");
-    defer alloc.free(s1);
-    try std.testing.expectEqualStrings("git -C /repo diff --exit-code", s1);
-    const s2 = try gitStatus(alloc, "/repo");
-    defer alloc.free(s2);
-    try std.testing.expectEqualStrings("git -C /repo status --porcelain", s2);
-    const s3 = try gitAdd(alloc, "/repo");
-    defer alloc.free(s3);
-    try std.testing.expectEqualStrings("git -C /repo add .", s3);
-    const s4 = try nixUpdate(alloc, "/repo");
-    defer alloc.free(s4);
-    try std.testing.expectEqualStrings("nix flake update --flake /repo", s4);
-    const s5 = try nixRebuild(alloc, "/repo", "host", .ng);
-    defer alloc.free(s5);
-    try std.testing.expectEqualStrings(
-        "nixos-rebuild switch --elevate=sudo --no-reexec --flake /repo#host --show-trace",
-        s5,
+    const flake = try formatFlake(alloc, "/repo", "host");
+    defer alloc.free(flake);
+    try std.testing.expectEqualStrings("/repo#host", flake);
+
+    const keep = try formatKeep(alloc, 7);
+    defer alloc.free(keep);
+    try std.testing.expectEqualStrings("+7", keep);
+}
+
+test "nixKeep argv" {
+    try expectArgv(
+        &.{
+            "sudo",
+            "nix-env",
+            "--profile",
+            "/nix/var/nix/profiles/system",
+            "--delete-generations",
+            "+5",
+        },
+        &nixKeep("+5"),
     );
-    const s5c = try nixRebuild(alloc, "/repo", "host", .classic);
-    defer alloc.free(s5c);
+}
+
+test "tailFromLastVersion keeps from last match" {
+    const output = "old Version 1\nnoise\nVersion 2\nline a\nline b\n";
     try std.testing.expectEqualStrings(
-        "sudo nixos-rebuild switch --fast --flake /repo#host --show-trace",
-        s5c,
+        "Version 2\nline a\nline b\n",
+        tailFromLastVersion(output),
     );
-    const s6 = try nixKeep(alloc, 5);
-    defer alloc.free(s6);
-    try std.testing.expectEqualStrings(
-        "sudo nix-env --profile /nix/var/nix/profiles/system" ++ " --delete-generations +5",
-        s6,
-    );
+}
+
+test "tailFromLastVersion without match returns all" {
+    const output = "line a\nline b\n";
+    try std.testing.expectEqualStrings(output, tailFromLastVersion(output));
+}
+
+test "tailFromLastVersion handles empty and last-line match" {
+    try std.testing.expectEqualStrings("", tailFromLastVersion(""));
+    try std.testing.expectEqualStrings("Version 3\n", tailFromLastVersion("a\nVersion 3\n"));
+    // Last line has no trailing newline.
+    try std.testing.expectEqualStrings("Version 4", tailFromLastVersion("a\nVersion 4"));
 }

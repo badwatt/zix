@@ -1,8 +1,8 @@
 //! Entry point for zix, a NixOS system update CLI.
 //!
-//! Initializes the allocator system, parses CLI arguments, injects
-//! dependencies, and delegates to `app.run`. Uses a two-phase
-//! `StaticAllocator` to enforce zero allocation at runtime.
+//! Initializes the allocator system, builds the real dependency ports, parses
+//! CLI arguments (inside `app.run`), and maps workflow errors to exit codes.
+//! Uses a two-phase `StaticAllocator` to enforce zero app allocation at runtime.
 
 const std = @import("std");
 const app = @import("app/init.zig");
@@ -11,18 +11,17 @@ const ui = @import("core/ui.zig");
 const process = @import("core/process.zig");
 const StaticAllocator = @import("core/static_allocator.zig");
 
-/// Application entry point. Sets up the arena + static allocator,
-/// collects args, wires dependency injection, runs app logic,
-/// and tears down in reverse order.
+/// Application entry point. Sets up the arena + static allocator, collects
+/// args, wires dependency injection, runs app logic, and maps errors to exit
+/// codes (2 for invalid usage, 1 otherwise).
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const arena = init.arena;
     const args = init.minimal.args;
 
-    // StaticAllocator wraps process arena. All allocation happens during
-    // init only; arena is cleaned up automatically on process exit.
+    // StaticAllocator wraps the process arena. All app allocation happens
+    // during init only; the arena is cleaned up automatically on process exit.
     var static_allocator = StaticAllocator.init(arena.allocator());
-
     const allocator = static_allocator.allocator();
 
     var args_list: std.ArrayList([]const u8) = .empty;
@@ -37,23 +36,21 @@ pub fn main(init: std.process.Init) !void {
     const stdout_file = std.Io.File.stdout();
     var stdout_writer = stdout_file.writer(io, &stdout_buf);
 
-    // Dependency injection: all side effects go through Deps for testability.
+    // Dependency injection: command execution, user I/O, scratch allocator,
+    // and environment all flow through Deps for testability.
     const deps = cli.Deps{
-        .run = process.run,
-        .confirm = ui.confirm,
-        .printTitle = ui.printTitle,
-        .configPrint = ui.configPrint,
+        .allocator = init.gpa,
+        .runner = process.real,
+        .ui = ui.terminal,
+        .environ = init.environ_map,
     };
 
-    try app.run(
-        io,
-        &stdout_writer.interface,
-        args_list.items,
-        deps,
-        &static_allocator,
-    );
+    app.run(io, &stdout_writer.interface, args_list.items, deps, &static_allocator) catch |err| {
+        std.debug.print("Error: {s}\n", .{cli.errorMessage(err)});
+        std.process.exit(cli.exitCode(err));
+    };
 
-    // Transition from static to deinit only if run() reached static phase.
+    // Transition from static to deinit only if run() reached the static phase.
     // Early returns (help, version, errors) never transition to static.
     static_allocator.transition_from_static_to_deinit_if_static();
 }
@@ -62,11 +59,13 @@ pub fn main(init: std.process.Init) !void {
 test {
     _ = @import("app/init.zig");
     _ = @import("app/config.zig");
+    _ = @import("app/hostname.zig");
     _ = @import("app/cli.zig");
     _ = @import("core/io.zig");
     _ = @import("core/commands.zig");
     _ = @import("core/ui.zig");
     _ = @import("core/process.zig");
+    _ = @import("core/dry_run.zig");
     _ = @import("core/static_allocator.zig");
     _ = @import("zon");
 }
