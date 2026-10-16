@@ -113,17 +113,15 @@ pub fn printVersion(writer: *std.Io.Writer, version: []const u8) !void {
 }
 
 /// Prints a single config line: `◉ label = value`. Uses comptime type
-/// detection to format strings vs other types. Suppresses trailing
-/// newline for the last field when `options.new_line` is false.
+/// detection to format strings vs other types.
 fn printConfigLine(
     writer: *std.Io.Writer,
     label: []const u8,
     value: anytype,
-    options: struct { new_line: bool = true },
 ) !void {
     std.debug.assert(label.len > 0);
     const value_fmt = comptime if (@TypeOf(value) == []const u8) "{" ++ "s}" else "{" ++ "}";
-    try io.printTo(writer, "{s}◉ {s}{s}{s} = {s}" ++ value_fmt ++ "{s}{s}", .{
+    try io.printTo(writer, "{s}◉ {s}{s}{s} = {s}" ++ value_fmt ++ "{s}\n", .{
         io.Cyan,
         io.Red,
         label,
@@ -131,20 +129,19 @@ fn printConfigLine(
         io.Cyan,
         value,
         io.Reset,
-        if (options.new_line) "\n" else "",
     });
 }
 
 /// Prints the visible config fields with colored labels via `printConfigLine`.
-/// Input-only flags (`yes`, `dry_run`) are omitted; the last field omits the
-/// trailing newline.
+/// Input-only flags (`yes`, `dry_run`) are omitted. Always ends with a newline
+/// so a following `printTitle` renders its leading newline as a blank line.
 pub fn configPrint(writer: *std.Io.Writer, config: Config) !void {
     std.debug.assert(config.repo.len > 0);
-    try printConfigLine(writer, "repo", config.repo, .{});
-    try printConfigLine(writer, "hostname", config.hostname, .{});
-    try printConfigLine(writer, "keep", config.keep, .{});
-    try printConfigLine(writer, "update", config.update, .{});
-    try printConfigLine(writer, "diff", config.diff, .{ .new_line = false });
+    try printConfigLine(writer, "repo", config.repo);
+    try printConfigLine(writer, "hostname", config.hostname);
+    try printConfigLine(writer, "keep", config.keep);
+    try printConfigLine(writer, "update", config.update);
+    try printConfigLine(writer, "diff", config.diff);
 }
 
 /// Reads a yes/no answer from stdin using raw posix.read.
@@ -192,7 +189,7 @@ fn writeConfirmPrompt(
     if (msg) |value| {
         try io.printTo(writer, "\n{s}{s}{s} {s}: ", .{ io.Yellow, value, io.Reset, hint });
     } else {
-        try io.printTo(writer, "\n\n{s}Proceed?{s} {s}: ", .{ io.Yellow, io.Reset, hint });
+        try io.printTo(writer, "\n{s}Proceed?{s} {s}: ", .{ io.Yellow, io.Reset, hint });
     }
     try writer.flush();
 }
@@ -307,6 +304,30 @@ test "configPrint renders visible fields only" {
     // Input-only flags are hidden from the summary.
     try std.testing.expect(std.mem.indexOf(u8, out, "yes") == null);
     try std.testing.expect(std.mem.indexOf(u8, out, "dry_run") == null);
+    // Ends with a newline so the next title renders a separating blank line.
+    try std.testing.expectEqual(@as(u8, '\n'), out[out.len - 1]);
+}
+
+test "config block is separated from the next title by a blank line" {
+    var buf: [1024]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    try configPrint(&writer, Config{
+        .repo = "r",
+        .hostname = "h",
+        .keep = 1,
+        .update = false,
+        .diff = false,
+        .yes = true,
+        .dry_run = true,
+    });
+    try printTitle(&writer, "Git Pull");
+    const out = buf[0..writer.end];
+
+    // Last config line ends with `Reset\n`; the title then emits `Blue\n`,
+    // which is what renders as the separating blank line.
+    var needle_buf: [64]u8 = undefined;
+    const needle = try std.fmt.bufPrint(&needle_buf, "false{s}\n{s}\n", .{ io.Reset, io.Blue });
+    try std.testing.expect(std.mem.indexOf(u8, out, needle) != null);
 }
 
 test "terminal port exposes production functions" {
