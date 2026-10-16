@@ -135,16 +135,16 @@ fn printConfigLine(
     });
 }
 
-/// Prints all config fields with colored labels via `printConfigLine`.
-/// The last field omits the trailing newline.
+/// Prints the visible config fields with colored labels via `printConfigLine`.
+/// Input-only flags (`yes`, `dry_run`) are omitted; the last field omits the
+/// trailing newline.
 pub fn configPrint(writer: *std.Io.Writer, config: Config) !void {
     std.debug.assert(config.repo.len > 0);
-    const field_names = @typeInfo(@TypeOf(config)).@"struct".field_names;
-    inline for (field_names, 0..) |name, i| {
-        const is_last = i == field_names.len - 1;
-        const value = @field(config, name);
-        try printConfigLine(writer, name, value, .{ .new_line = !is_last });
-    }
+    try printConfigLine(writer, "repo", config.repo, .{});
+    try printConfigLine(writer, "hostname", config.hostname, .{});
+    try printConfigLine(writer, "keep", config.keep, .{});
+    try printConfigLine(writer, "update", config.update, .{});
+    try printConfigLine(writer, "diff", config.diff, .{ .new_line = false });
 }
 
 /// Reads a yes/no answer from stdin using raw posix.read.
@@ -285,7 +285,7 @@ test "printVersion writes version" {
     try std.testing.expect(std.mem.indexOf(u8, out, "1.0.0") != null);
 }
 
-test "configPrint renders all fields" {
+test "configPrint renders visible fields only" {
     var buf: [1024]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buf);
     const config = Config{
@@ -294,15 +294,19 @@ test "configPrint renders all fields" {
         .keep = 10,
         .update = false,
         .diff = true,
-        .yes = false,
-        .dry_run = false,
+        .yes = true,
+        .dry_run = true,
     };
     try configPrint(&writer, config);
-    try std.testing.expect(std.mem.indexOf(u8, &buf, "repo") != null);
-    try std.testing.expect(std.mem.indexOf(u8, &buf, "hostname") != null);
-    try std.testing.expect(std.mem.indexOf(u8, &buf, "keep") != null);
-    try std.testing.expect(std.mem.indexOf(u8, &buf, "update") != null);
-    try std.testing.expect(std.mem.indexOf(u8, &buf, "diff") != null);
+    const out = buf[0..writer.end];
+    try std.testing.expect(std.mem.indexOf(u8, out, "repo") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "hostname") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "keep") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "update") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "diff") != null);
+    // Input-only flags are hidden from the summary.
+    try std.testing.expect(std.mem.indexOf(u8, out, "yes") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "dry_run") == null);
 }
 
 test "terminal port exposes production functions" {
