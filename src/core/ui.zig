@@ -168,8 +168,13 @@ pub fn confirm(
     try writeConfirmPrompt(writer, default_value, msg);
 
     var buf: [256]u8 = undefined;
-    var byte_index: u32 = 0;
+    var byte_index: usize = 0;
     while (byte_index < buf.len - 1) {
+        // Wait for readability instead of spinning when stdin is non-blocking.
+        var fds = [_]std.posix.pollfd{
+            .{ .fd = 0, .events = std.posix.POLL.IN, .revents = 0 },
+        };
+        _ = std.posix.poll(&fds, -1) catch |err| return err;
         const bytes_read = std.posix.read(0, buf[byte_index .. byte_index + 1]) catch |err| {
             if (err == error.WouldBlock) continue;
             return err;
@@ -183,7 +188,20 @@ pub fn confirm(
         }
         byte_index += 1;
     }
+    // Overlong answer: discard the rest of the line so the next prompt is not
+    // answered with this line's leftover bytes.
+    drainLine();
     return false;
+}
+
+/// Discards stdin up to and including the next newline (or EOF).
+fn drainLine() void {
+    var buf: [64]u8 = undefined;
+    while (true) {
+        const bytes_read = std.posix.read(0, &buf) catch return;
+        if (bytes_read == 0) return;
+        if (std.mem.indexOfScalar(u8, buf[0..bytes_read], '\n') != null) return;
+    }
 }
 
 /// Writes the confirm prompt with colored (Y/n) or (y/N) hint.
