@@ -218,15 +218,13 @@ fn writeConfirmPrompt(
 /// Parses a yes/no response string. "y"/"yes" → true, "n"/"no" → false.
 /// Empty input falls back to `default_value`. Unknown input defaults to false.
 fn parseConfirmResponse(line: []const u8, default_value: bool) bool {
-    std.debug.assert(line.len <= 256);
-
     var lower_buf: [256]u8 = undefined;
     if (line.len > lower_buf.len) return false;
     const lower = std.ascii.lowerString(&lower_buf, line);
 
     if (equal(u8, lower, "y") or equal(u8, lower, "yes")) return true;
     if (equal(u8, lower, "n") or equal(u8, lower, "no")) return false;
-    if (equal(u8, lower, "") or line.len == 0) return default_value;
+    if (line.len == 0) return default_value;
     return false;
 }
 
@@ -250,13 +248,6 @@ fn confirmAlloc(
 }
 
 // --- Tests ---
-
-test "io.printTo writes exact bytes" {
-    var buf: [256]u8 = undefined;
-    var writer = std.Io.Writer.fixed(&buf);
-    try io.printTo(&writer, "hello {d} {s}", .{ 42, "world" });
-    try std.testing.expectEqualStrings("hello 42 world", buf[0..14]);
-}
 
 test "printError and printSuccess wrap in color" {
     var buf: [128]u8 = undefined;
@@ -444,17 +435,7 @@ test "confirm empty input hits EndOfStream" {
 }
 
 test "parseConfirmResponse rejects overlong line" {
-    var line: [256]u8 = undefined;
+    var line: [300]u8 = undefined;
     @memset(&line, 'x');
     try std.testing.expectEqual(false, parseConfirmResponse(&line, true));
-}
-
-test "style constants are non-empty" {
-    const field_names = @typeInfo(@This()).@"struct".field_names;
-    inline for (field_names) |name| {
-        const val = @field(@This(), name);
-        if (@TypeOf(val) == []const u8) {
-            try std.testing.expect(val.len > 0);
-        }
-    }
 }

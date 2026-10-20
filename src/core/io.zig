@@ -95,9 +95,7 @@ test "colorSupported honors NO_COLOR and TERM" {
 }
 
 test "style constants are non-empty" {
-    const field_names = @typeInfo(@This()).@"struct".field_names;
-    inline for (field_names) |name| {
-        const val = @field(@This(), name);
-        try std.testing.expect(val.len > 0);
+    for ([_][]const u8{ Red, Green, Yellow, Blue, Cyan, Reset }) |code| {
+        try std.testing.expect(code.len > 0);
     }
 }

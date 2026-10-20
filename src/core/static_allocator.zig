@@ -97,7 +97,6 @@ fn remap(ctx: *anyopaque, buf: []u8, buf_align: Alignment, new_len: usize, ret_a
 /// internally frees intermediate buffers during both .init and .deinit.
 fn free(ctx: *anyopaque, buf: []u8, buf_align: Alignment, ret_addr: usize) void {
     const self: *StaticAllocator = @ptrCast(@alignCast(ctx));
-    _ = self.state;
     return self.parent_allocator.rawFree(buf, buf_align, ret_addr);
 }
 
