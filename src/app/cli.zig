@@ -20,6 +20,7 @@ pub const Error = error{
     FlakeUpdateFailed,
     GitStatusFailed,
     GitAddFailed,
+    DiffFailed,
     RebuildFailed,
     HostnameUnknown,
     CleanupFailed,
@@ -195,6 +196,10 @@ fn showDiff(io: std.Io, writer: *std.Io.Writer, commands: Commands, deps: Deps) 
     try deps.ui.title(writer, "Nix Diff");
     const output = try deps.runner.capture(io, deps.allocator, &commands.nix_diff);
     defer output.deinit(deps.allocator);
+    if (output.code != 0) {
+        try deps.ui.err(writer, "Failed to compute closure diff");
+        return Error.DiffFailed;
+    }
     const tail = cmd.tailFromLastVersion(output.stdout);
     try deps.ui.output(writer, tail);
     if (tail.len > 0 and tail[tail.len - 1] != '\n') {
@@ -213,6 +218,7 @@ pub fn errorMessage(err: anyerror) []const u8 {
         error.FlakeUpdateFailed => "Failed to update flake inputs",
         error.GitStatusFailed => "Failed to read repository status",
         error.GitAddFailed => "Failed to add changes to the stage",
+        error.DiffFailed => "Failed to compute closure diff",
         error.RebuildFailed => "Nixos rebuild failed",
         error.HostnameUnknown => "Could not determine hostname; pass --hostname",
         error.CleanupFailed => "Cleanup failed",
@@ -232,6 +238,7 @@ pub fn exitCode(err: anyerror) u8 {
 
 var fail_needle: ?[]const u8 = null;
 var capture_code: i32 = 0;
+var capture_code_needle: ?[]const u8 = null;
 var capture_output: []const u8 = "";
 var probe_result: i32 = 0;
 var probe_error: bool = false;
@@ -246,6 +253,7 @@ var output_len: usize = 0;
 fn resetMocks() void {
     fail_needle = null;
     capture_code = 0;
+    capture_code_needle = null;
     capture_output = "";
     probe_result = 0;
     probe_error = false;
@@ -276,10 +284,14 @@ fn mockCapture(
     _: ?*anyopaque,
     _: std.Io,
     allocator: std.mem.Allocator,
-    _: process.Runner.Command,
+    argv: process.Runner.Command,
 ) anyerror!process.Capture {
+    const code = if (capture_code_needle) |needle|
+        (if (hasArg(argv, needle)) capture_code else 0)
+    else
+        capture_code;
     const out = try allocator.dupe(u8, capture_output);
-    return .{ .code = capture_code, .stdout = out, .stderr = &.{} };
+    return .{ .code = code, .stdout = out, .stderr = &.{} };
 }
 
 fn mockProbe(_: ?*anyopaque, _: std.Io, _: process.Runner.Command) anyerror!i32 {
@@ -625,6 +637,28 @@ test "execute appends newline when diff tail lacks one" {
     try std.testing.expect(std.mem.endsWith(u8, buf[0..writer.end], "\n"));
 }
 
+test "execute fails when diff-closures fails" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var environ = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ.deinit();
+    resetMocks();
+    capture_code = 7;
+    capture_code_needle = "diff-closures";
+
+    var config = testConfig("host");
+    config.yes = true;
+    config.diff = true;
+    const commands = try buildCommands(config, .ng, arena.allocator());
+    var buf: [1024]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    try std.testing.expectError(
+        Error.DiffFailed,
+        execute(std.testing.io, &writer, config, commands, testDeps(arena.allocator(), &environ)),
+    );
+    try std.testing.expectEqualStrings("Failed to compute closure diff", last_error);
+}
+
 test "errorMessage and exitCode cover every variant" {
     try std.testing.expectEqualStrings("Invalid arguments", errorMessage(error.InvalidArgs));
     try std.testing.expectEqualStrings("Invalid configuration", errorMessage(error.InvalidConfig));
@@ -633,6 +667,7 @@ test "errorMessage and exitCode cover every variant" {
     try std.testing.expectEqualStrings("Failed to update flake inputs", errorMessage(error.FlakeUpdateFailed));
     try std.testing.expectEqualStrings("Failed to read repository status", errorMessage(error.GitStatusFailed));
     try std.testing.expectEqualStrings("Failed to add changes to the stage", errorMessage(error.GitAddFailed));
+    try std.testing.expectEqualStrings("Failed to compute closure diff", errorMessage(error.DiffFailed));
     try std.testing.expectEqualStrings("Nixos rebuild failed", errorMessage(error.RebuildFailed));
     try std.testing.expectEqualStrings("Could not determine hostname; pass --hostname", errorMessage(error.HostnameUnknown));
     try std.testing.expectEqualStrings("Cleanup failed", errorMessage(error.CleanupFailed));
