@@ -17,16 +17,22 @@ cd zix
 zig build run
 ```
 
-Move binary to PATH:
+Install the binary somewhere on your `PATH`:
 
 ```sh
-sudo mv zig-out/bin/zix <PATH>
+install -Dm755 zig-out/bin/zix ~/.local/bin/zix
 ```
 
 ### NixOS
 
 ```sh
-nix run github:badwatt/zix#target.x86_64-linux-musl
+nix run github:badwatt/zix
+```
+
+Or install it into your profile:
+
+```sh
+nix profile install github:badwatt/zix
 ```
 
 Add to flake:
@@ -56,22 +62,28 @@ All tasks via `zig build`:
 |---|---|
 | `zig build` | Compile project |
 | `zig build run` | Build and run |
-| `zig build test --summary all` | Run unit + integration test suite |
+| `zig build test --summary all` | Run unit, integration and build-tool tests |
 | `zig build coverage` | Run tests under kcov, print line coverage |
 | `zig build docs` | Generate autodoc HTML |
-| `zig build docs:serve` | Build docs + serve at `localhost:8000` |
-| `zig build fmt` | Not available — use `zig fmt src/` directly |
+| `zig build docs:serve` | Build docs + serve at `127.0.0.1:8000` |
+| `zig build fmt` | Format `src/`, `build/`, `tests/` and `build.zig` |
+| `zig build fmt:check` | Fail if any file needs formatting (used by CI) |
 
 ## Coverage
 
-100% line coverage via **kcov**:
+100% line coverage of `src/` via **kcov**:
 
 ```sh
 zig build coverage
-# 100.0% (1163/1163 lines)
+# 100.0% (<covered>/<total> lines)
 ```
 
-Tests run with LLVM backend (`.use_llvm = true`) for accurate DWARF instrumentation.
+Tests run with the LLVM backend (`.use_llvm = true`) for accurate DWARF
+instrumentation. The build-time helpers in `build/` have their own unit tests
+(part of `zig build test`) but are not instrumented by kcov.
+
+CI runs `zig build fmt:check` and `zig build test` on every push and pull
+request, and the release tag job depends on the same checks.
 
 ## Documentation
 
@@ -100,6 +112,9 @@ Autodoc uses `///` (declarations) and `//!` (module-level) comments. No doc comm
 ```
 
 Exit codes: `0` success, `1` runtime failure, `2` invalid arguments or config.
+Diagnostics go to stderr; stdout carries only the normal report. ANSI colors
+are disabled when stdout is not a terminal, when `NO_COLOR` is set, or when
+`TERM=dumb`.
 
 Commands run as argv lists (never through a shell), so a `--repo` containing
 spaces or shell metacharacters cannot be injected. Hostname resolves via
@@ -118,6 +133,7 @@ evaluation.
 build.zig            Build configuration
 build/coverage.zig   kcov JSON parser (Zig)
 build/serve.zig      Static HTTP server for autodoc (Zig)
+build/tests.zig      Test root for the build/ helpers
 src/main.zig         Entry point, port wiring, exit codes
 src/app/init.zig     Arg parsing (Intent), hostname, dispatch
 src/app/cli.zig      Workflow pipeline, Deps, error/exit mapping

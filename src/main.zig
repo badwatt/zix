@@ -2,7 +2,8 @@
 //!
 //! Initializes the allocator system, builds the real dependency ports, parses
 //! CLI arguments (inside `app.run`), and maps workflow errors to exit codes.
-//! Uses a two-phase `StaticAllocator` to enforce zero app allocation at runtime.
+//! A two-phase `StaticAllocator` guards the init-time allocations; runtime
+//! command captures use the general-purpose allocator as scratch memory.
 
 const std = @import("std");
 const app = @import("app/init.zig");
@@ -20,8 +21,9 @@ pub fn main(init: std.process.Init) !void {
     const arena = init.arena;
     const args = init.minimal.args;
 
-    // StaticAllocator wraps the process arena. All app allocation happens
-    // during init only; the arena is cleaned up automatically on process exit.
+    // StaticAllocator wraps the process arena and blocks allocation after the
+    // workflow starts. Runtime captures use `init.gpa` (see Deps.allocator);
+    // the arena is cleaned up automatically on process exit.
     var static_allocator = StaticAllocator.init(arena.allocator());
     const allocator = static_allocator.allocator();
 
