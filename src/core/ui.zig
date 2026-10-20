@@ -98,6 +98,8 @@ pub fn printHelp(writer: *std.Io.Writer) !void {
         \\ -r, --repo      : set repo path (default is $HOME/.dotfiles)
         \\ -n, --hostname  : set hostname (default is OS hostname)
         \\ -k, --keep      : set generations to keep (default is 10)
+        \\ -j, --jobs      : set max parallel builds (default is nix config)
+        \\ -c, --cores     : set max parallel jobs per build (default is nix config)
         \\ -u, --update    : set update to true (default is false)
         \\ -d, --diff      : set diff to true (default is false)
         \\ -y, --yes       : assume yes for all prompts (default is false)
@@ -149,6 +151,8 @@ pub fn configPrint(writer: *std.Io.Writer, config: Config) !void {
     try printConfigLine(writer, "repo", config.repo);
     try printConfigLine(writer, "hostname", config.hostname);
     try printConfigLine(writer, "keep", config.keep);
+    if (config.jobs) |jobs| try printConfigLine(writer, "jobs", jobs);
+    if (config.cores) |cores| try printConfigLine(writer, "cores", cores);
     try printConfigLine(writer, "update", config.update);
     try printConfigLine(writer, "diff", config.diff);
     if (config.dry_run) try printConfigLine(writer, "dry-run", config.dry_run);
@@ -337,6 +341,8 @@ test "configPrint renders visible fields only" {
         .repo = "~/.dotfiles",
         .hostname = "nixos",
         .keep = 10,
+        .jobs = 4,
+        .cores = 6,
         .update = false,
         .diff = true,
         .yes = true,
@@ -347,6 +353,8 @@ test "configPrint renders visible fields only" {
     try std.testing.expect(std.mem.indexOf(u8, out, "repo") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "hostname") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "keep") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "jobs = 4") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "cores = 6") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "update") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "diff") != null);
     // `yes` is hidden; `dry-run` is shown because it changes what happens.
@@ -363,6 +371,8 @@ test "configPrint omits dry-run when it is off" {
         .repo = "r",
         .hostname = "h",
         .keep = 1,
+        .jobs = null,
+        .cores = null,
         .update = false,
         .diff = false,
         .yes = false,
@@ -378,6 +388,8 @@ test "config block is separated from the next title by a blank line" {
         .repo = "r",
         .hostname = "h",
         .keep = 1,
+        .jobs = null,
+        .cores = null,
         .update = false,
         .diff = false,
         .yes = true,
@@ -405,6 +417,8 @@ test "terminal port exposes production functions" {
         .repo = "r",
         .hostname = "h",
         .keep = 1,
+        .jobs = null,
+        .cores = null,
         .update = false,
         .diff = false,
         .yes = false,

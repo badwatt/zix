@@ -51,31 +51,74 @@ pub fn rebuildProbe() [3][]const u8 {
     return .{ "nixos-rebuild", "--elevate=none", "list-generations" };
 }
 
+/// Maximum argv length for a rebuild: seven base arguments plus
+/// `--max-jobs N` and `--cores N`.
+const rebuild_capacity = 11;
+
+/// A `nixos-rebuild` argv with a fixed capacity and its used length.
+pub const Rebuild = struct {
+    argv: [rebuild_capacity][]const u8 = undefined,
+    len: usize = 0,
+
+    /// Returns the populated argv slice.
+    pub fn slice(self: *const Rebuild) []const []const u8 {
+        return self.argv[0..self.len];
+    }
+
+    fn push(self: *Rebuild, arg: []const u8) void {
+        std.debug.assert(self.len < self.argv.len);
+        self.argv[self.len] = arg;
+        self.len += 1;
+    }
+};
+
 /// Builds the `switch` argv for the detected flavor from the pre-formatted
-/// `<repo>#<hostname>` flake reference. Always skips the self re-exec with the
-/// flavor-appropriate flag, so the redundant pre-build evaluation is not paid.
-pub fn nixRebuild(flake: []const u8, flavor: RebuildFlavor) [7][]const u8 {
+/// `<repo>#<hostname>` flake reference and optional `--max-jobs`/`--cores`
+/// values. Always skips the self re-exec with the flavor-appropriate flag, so
+/// the redundant pre-build evaluation is not paid.
+pub fn nixRebuild(
+    flake: []const u8,
+    flavor: RebuildFlavor,
+    max_jobs: ?[]const u8,
+    cores: ?[]const u8,
+) Rebuild {
     std.debug.assert(flake.len > 0);
-    return switch (flavor) {
-        .ng => .{
-            "nixos-rebuild",
-            "switch",
-            "--elevate=sudo",
-            "--no-reexec",
-            "--flake",
-            flake,
-            "--show-trace",
+    if (max_jobs) |jobs| std.debug.assert(jobs.len > 0);
+    if (cores) |value| std.debug.assert(value.len > 0);
+
+    var argv: Rebuild = .{};
+    switch (flavor) {
+        .ng => {
+            argv.push("nixos-rebuild");
+            argv.push("switch");
+            argv.push("--elevate=sudo");
+            argv.push("--no-reexec");
         },
-        .classic => .{
-            "sudo",
-            "nixos-rebuild",
-            "switch",
-            "--fast",
-            "--flake",
-            flake,
-            "--show-trace",
+        .classic => {
+            argv.push("sudo");
+            argv.push("nixos-rebuild");
+            argv.push("switch");
+            argv.push("--fast");
         },
-    };
+    }
+    if (max_jobs) |jobs| {
+        argv.push("--max-jobs");
+        argv.push(jobs);
+    }
+    if (cores) |value| {
+        argv.push("--cores");
+        argv.push(value);
+    }
+    argv.push("--flake");
+    argv.push(flake);
+    argv.push("--show-trace");
+    return argv;
+}
+
+/// Formats a `--max-jobs`/`--cores` value for `nixos-rebuild`.
+pub fn formatCount(allocator: std.mem.Allocator, value: u8) ![]const u8 {
+    std.debug.assert(value > 0);
+    return std.fmt.allocPrint(allocator, "{d}", .{value});
 }
 
 /// Formats the `<repo>#<hostname>` flake reference for `--flake`.
@@ -186,6 +229,7 @@ test "nix commands use argv, not shell" {
 }
 
 test "nixRebuild reflects flavor" {
+    const ng = nixRebuild("/repo#host", .ng, null, null);
     try expectArgv(
         &.{
             "nixos-rebuild",
@@ -196,8 +240,9 @@ test "nixRebuild reflects flavor" {
             "/repo#host",
             "--show-trace",
         },
-        &nixRebuild("/repo#host", .ng),
+        ng.slice(),
     );
+    const classic = nixRebuild("/repo#host", .classic, null, null);
     try expectArgv(
         &.{
             "sudo",
@@ -208,7 +253,75 @@ test "nixRebuild reflects flavor" {
             "/repo#host",
             "--show-trace",
         },
-        &nixRebuild("/repo#host", .classic),
+        classic.slice(),
+    );
+}
+
+test "nixRebuild includes --cores when requested" {
+    const with_cores = nixRebuild("/repo#host", .ng, null, "6");
+    try expectArgv(
+        &.{
+            "nixos-rebuild",
+            "switch",
+            "--elevate=sudo",
+            "--no-reexec",
+            "--cores",
+            "6",
+            "--flake",
+            "/repo#host",
+            "--show-trace",
+        },
+        with_cores.slice(),
+    );
+    const both = nixRebuild("/repo#host", .classic, "2", "4");
+    try expectArgv(
+        &.{
+            "sudo",
+            "nixos-rebuild",
+            "switch",
+            "--fast",
+            "--max-jobs",
+            "2",
+            "--cores",
+            "4",
+            "--flake",
+            "/repo#host",
+            "--show-trace",
+        },
+        both.slice(),
+    );
+}
+
+test "nixRebuild includes --max-jobs when requested" {
+    const ng = nixRebuild("/repo#host", .ng, "4", null);
+    try expectArgv(
+        &.{
+            "nixos-rebuild",
+            "switch",
+            "--elevate=sudo",
+            "--no-reexec",
+            "--max-jobs",
+            "4",
+            "--flake",
+            "/repo#host",
+            "--show-trace",
+        },
+        ng.slice(),
+    );
+    const classic = nixRebuild("/repo#host", .classic, "2", null);
+    try expectArgv(
+        &.{
+            "sudo",
+            "nixos-rebuild",
+            "switch",
+            "--fast",
+            "--max-jobs",
+            "2",
+            "--flake",
+            "/repo#host",
+            "--show-trace",
+        },
+        classic.slice(),
     );
 }
 
@@ -221,6 +334,10 @@ test "formatFlake and formatKeep allocate expected strings" {
     const keep = try formatKeep(alloc, 7);
     defer alloc.free(keep);
     try std.testing.expectEqualStrings("+7", keep);
+
+    const count = try formatCount(alloc, 4);
+    defer alloc.free(count);
+    try std.testing.expectEqualStrings("4", count);
 }
 
 test "nixKeep argv" {

@@ -18,6 +18,10 @@ pub const Config = struct {
     hostname: []const u8,
     /// Number of generations to keep when pruning.
     keep: u8,
+    /// Maximum parallel Nix builds, or null to use the Nix configuration.
+    jobs: ?u8,
+    /// Maximum parallel jobs for a single build, or null for the Nix config.
+    cores: ?u8,
     /// Whether to run `nix flake update` before rebuild.
     update: bool,
     /// Whether to show nix profile diff-closures after rebuild.
@@ -33,6 +37,8 @@ pub const Config = struct {
             .repo = DEFAULT_REPO,
             .hostname = hostname,
             .keep = DEFAULT_KEEP,
+            .jobs = null,
+            .cores = null,
             .update = false,
             .diff = false,
             .yes = false,
@@ -45,6 +51,12 @@ pub const Config = struct {
         if (self.repo.len == 0) return "repo path cannot be empty";
         if (self.hostname.len == 0) return "hostname cannot be empty";
         if (self.keep == 0) return "generations to keep must be > 0";
+        if (self.jobs) |jobs| {
+            if (jobs == 0) return "jobs must be > 0";
+        }
+        if (self.cores) |cores| {
+            if (cores == 0) return "cores must be > 0";
+        }
         return null;
     }
 
@@ -88,6 +100,18 @@ test "validate rejects empty repo" {
 
 test "validate rejects empty hostname" {
     const config = Config.defaults("");
+    try std.testing.expect(config.validate() != null);
+}
+
+test "validate rejects zero jobs" {
+    var config = Config.defaults("nixos");
+    config.jobs = 0;
+    try std.testing.expect(config.validate() != null);
+}
+
+test "validate rejects zero cores" {
+    var config = Config.defaults("nixos");
+    config.cores = 0;
     try std.testing.expect(config.validate() != null);
 }
 

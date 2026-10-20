@@ -80,7 +80,7 @@ const Step = union(enum) {
 };
 
 /// Which `Config` field a value flag targets.
-const ValueKey = enum { repo, hostname, keep };
+const ValueKey = enum { repo, hostname, keep, jobs, cores };
 
 /// Parses arguments, folding flags into `config`. Non-run intents short-circuit.
 fn parse(args: []const []const u8, config: *Config, writer: *std.Io.Writer) Intent {
@@ -148,7 +148,9 @@ fn parseLong(
     }
     if (std.mem.eql(u8, arg, "--repo") or
         std.mem.eql(u8, arg, "--hostname") or
-        std.mem.eql(u8, arg, "--keep"))
+        std.mem.eql(u8, arg, "--keep") or
+        std.mem.eql(u8, arg, "--jobs") or
+        std.mem.eql(u8, arg, "--cores"))
     {
         const value = takeValue(args, i, arg, writer) orelse return .{ .terminal = .invalid };
         return setValue(longKey(arg), value, arg, config, writer);
@@ -161,6 +163,8 @@ fn parseLong(
 fn longKey(arg: []const u8) ValueKey {
     if (std.mem.eql(u8, arg, "--repo")) return .repo;
     if (std.mem.eql(u8, arg, "--hostname")) return .hostname;
+    if (std.mem.eql(u8, arg, "--jobs")) return .jobs;
+    if (std.mem.eql(u8, arg, "--cores")) return .cores;
     return .keep;
 }
 
@@ -180,7 +184,7 @@ fn parseShort(
             'd' => config.diff = true,
             'u' => config.update = true,
             'y' => config.yes = true,
-            'r', 'n', 'k' => {
+            'r', 'n', 'k', 'j', 'c' => {
                 var label_buf: [4]u8 = undefined;
                 const label = std.fmt.bufPrint(&label_buf, "-{c}", .{flag}) catch unreachable;
                 // A value flag consumes the next argv, so anything after it in
@@ -205,6 +209,8 @@ fn parseShort(
 fn shortKey(flag: u8) ValueKey {
     if (flag == 'r') return .repo;
     if (flag == 'n') return .hostname;
+    if (flag == 'j') return .jobs;
+    if (flag == 'c') return .cores;
     return .keep;
 }
 
@@ -240,6 +246,10 @@ fn setValue(
         .repo => config.repo = value,
         .hostname => config.hostname = value,
         .keep => config.keep = parseKeep(value, label, writer) orelse
+            return .{ .terminal = .invalid },
+        .jobs => config.jobs = parseKeep(value, label, writer) orelse
+            return .{ .terminal = .invalid },
+        .cores => config.cores = parseKeep(value, label, writer) orelse
             return .{ .terminal = .invalid },
     }
     return .{ .consumed = 1 };
@@ -391,6 +401,39 @@ test "parse accepts a boolean flag before a value flag in a cluster" {
     try std.testing.expectEqualStrings("/r", config.repo);
 }
 
+test "parse folds the jobs flag" {
+    var buf: [256]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+
+    var short = testConfig();
+    try std.testing.expectEqual(
+        Intent.run,
+        parseIntent(&.{ "zix", "-j", "4" }, &short, &writer),
+    );
+    try std.testing.expectEqual(@as(?u8, 4), short.jobs);
+
+    var long = testConfig();
+    try std.testing.expectEqual(
+        Intent.run,
+        parseIntent(&.{ "zix", "--jobs", "2" }, &long, &writer),
+    );
+    try std.testing.expectEqual(@as(?u8, 2), long.jobs);
+
+    var cores = testConfig();
+    try std.testing.expectEqual(
+        Intent.run,
+        parseIntent(&.{ "zix", "-c", "6" }, &cores, &writer),
+    );
+    try std.testing.expectEqual(@as(?u8, 6), cores.cores);
+
+    var cores_long = testConfig();
+    try std.testing.expectEqual(
+        Intent.run,
+        parseIntent(&.{ "zix", "--cores", "3" }, &cores_long, &writer),
+    );
+    try std.testing.expectEqual(@as(?u8, 3), cores_long.cores);
+}
+
 test "parse rejects invalid input and reports it" {
     const cases = &[_][]const []const u8{
         &.{ "zix", "unknown" },
@@ -401,6 +444,12 @@ test "parse rejects invalid input and reports it" {
         &.{ "zix", "-k", "abc" },
         &.{ "zix", "-k", "0" },
         &.{ "zix", "--keep", "x" },
+        &.{ "zix", "-j", "0" },
+        &.{ "zix", "-j", "abc" },
+        &.{ "zix", "--jobs", "x" },
+        &.{ "zix", "-c", "0" },
+        &.{ "zix", "-c", "abc" },
+        &.{ "zix", "--cores", "x" },
         &.{ "zix", "/repo", "extra" },
         &.{ "zix", "-r", "/repo", "trailing" },
         &.{ "zix", "-ry", "/repo" },
