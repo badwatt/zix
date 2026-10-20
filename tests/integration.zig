@@ -28,13 +28,21 @@ const Run = struct {
 
 /// Runs the binary with `extra` args (stdin ignored).
 fn run(extra: []const []const u8) !Run {
+    return runWith(extra, null);
+}
+
+/// Runs the binary with `extra` args and an optional replacement environment.
+fn runWith(extra: []const []const u8, environ_map: ?*const std.process.Environ.Map) !Run {
     const allocator = std.testing.allocator;
     var argv: std.ArrayList([]const u8) = .empty;
     defer argv.deinit(allocator);
     try argv.append(allocator, exe_path);
     for (extra) |arg| try argv.append(allocator, arg);
 
-    const result = try std.process.run(allocator, std.testing.io, .{ .argv = argv.items });
+    const result = try std.process.run(allocator, std.testing.io, .{
+        .argv = argv.items,
+        .environ_map = environ_map,
+    });
     return .{ .term = result.term, .stdout = result.stdout, .stderr = result.stderr };
 }
 
@@ -55,11 +63,12 @@ test "long help and version flags work" {
     try std.testing.expect(std.mem.indexOf(u8, version.stdout, "ZIX version") != null);
 }
 
-test "unknown flag exits with code 2" {
+test "unknown flag exits with code 2 and reports on stderr" {
     const result = try run(&.{"-x"});
     defer result.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(i32, 2), result.code());
-    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "Unknown flag") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "Unknown flag") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "Unknown flag") == null);
 }
 
 test "zero keep exits with code 2" {
@@ -81,4 +90,15 @@ test "unknown hostname aborts before rebuild" {
     defer result.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(i32, 1), result.code());
     try std.testing.expect(std.mem.indexOf(u8, result.stderr, "hostname") != null);
+}
+
+test "output has no ANSI escapes without a terminal" {
+    var environ = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ.deinit();
+    try environ.put("NO_COLOR", "1");
+
+    const result = try runWith(&.{"-h"}, &environ);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(i32, 0), result.code());
+    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "\x1b[") == null);
 }

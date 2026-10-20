@@ -8,6 +8,7 @@ const std = @import("std");
 const app = @import("app/init.zig");
 const cli = @import("app/cli.zig");
 const ui = @import("core/ui.zig");
+const io_mod = @import("core/io.zig");
 const process = @import("core/process.zig");
 const StaticAllocator = @import("core/static_allocator.zig");
 
@@ -36,17 +37,28 @@ pub fn main(init: std.process.Init) !void {
     const stdout_file = std.Io.File.stdout();
     var stdout_writer = stdout_file.writer(io, &stdout_buf);
 
+    // Diagnostics go to stderr; colors only when the terminal supports them.
+    var stderr_buf: [1024]u8 = undefined;
+    var stderr_writer = std.Io.File.stderr().writer(io, &stderr_buf);
+    io_mod.color_enabled = io_mod.colorSupported(io, init.environ_map);
+
     // Dependency injection: command execution, user I/O, scratch allocator,
     // and environment all flow through Deps for testability.
     const deps = cli.Deps{
         .allocator = init.gpa,
         .runner = process.real,
         .ui = ui.terminal,
+        .err_writer = &stderr_writer.interface,
         .environ = init.environ_map,
     };
 
     app.run(io, &stdout_writer.interface, args_list.items, deps, &static_allocator) catch |err| {
-        std.debug.print("Error: {s}\n", .{cli.errorMessage(err)});
+        // Use the same stderr writer as the workflow: mixing it with
+        // `std.debug.print` corrupts the stream when stderr is a file.
+        var err_buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&err_buf, "Error: {s}", .{cli.errorMessage(err)}) catch
+            cli.errorMessage(err);
+        ui.printError(&stderr_writer.interface, msg) catch {};
         std.process.exit(cli.exitCode(err));
     };
 

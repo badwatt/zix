@@ -36,7 +36,7 @@ pub fn run(
     const resolved = hostname_mod.resolve(cli_io, allocator, deps.environ, &hostname_buf);
     var config = Config.defaults(resolved);
 
-    const intent = parse(args, &config, writer);
+    const intent = parse(args, &config, deps.err_writer);
     switch (intent) {
         .help => return ui.printHelp(writer),
         .version => return ui.printVersion(writer, VERSION),
@@ -47,7 +47,7 @@ pub fn run(
     config.repo = try Config.expandTilde(allocator, deps.environ.get("HOME"), config.repo);
 
     if (config.validate()) |msg| {
-        printValidationError(writer, msg);
+        printValidationError(deps.err_writer, msg);
         return cli.Error.InvalidConfig;
     }
 
@@ -270,6 +270,7 @@ const test_runner = cli.Deps{
         .config = noopConfig,
     },
     .environ = undefined,
+    .err_writer = undefined,
 };
 
 fn noopRun(_: ?*anyopaque, _: std.Io, _: []const []const u8) anyerror!i32 {
@@ -402,8 +403,11 @@ test "parse drops overlong error messages" {
 test "run dispatches help and version without running the workflow" {
     var environ = std.process.Environ.Map.init(std.testing.allocator);
     defer environ.deinit();
+    var ebuf: [1024]u8 = undefined;
+    var ewriter = std.Io.Writer.fixed(&ebuf);
     var deps = test_runner;
     deps.environ = &environ;
+    deps.err_writer = &ewriter;
 
     for ([_][]const []const u8{
         &.{ "zix", "-h" },
@@ -424,8 +428,11 @@ test "run dispatches help and version without running the workflow" {
 test "run rejects invalid arguments with InvalidArgs" {
     var environ = std.process.Environ.Map.init(std.testing.allocator);
     defer environ.deinit();
+    var ebuf: [1024]u8 = undefined;
+    var ewriter = std.Io.Writer.fixed(&ebuf);
     var deps = test_runner;
     deps.environ = &environ;
+    deps.err_writer = &ewriter;
 
     var memory: [8192]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&memory);
@@ -441,8 +448,11 @@ test "run rejects invalid arguments with InvalidArgs" {
 test "run rejects zero keep with InvalidArgs" {
     var environ = std.process.Environ.Map.init(std.testing.allocator);
     defer environ.deinit();
+    var ebuf: [1024]u8 = undefined;
+    var ewriter = std.Io.Writer.fixed(&ebuf);
     var deps = test_runner;
     deps.environ = &environ;
+    deps.err_writer = &ewriter;
 
     var memory: [8192]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&memory);
@@ -458,8 +468,11 @@ test "run rejects zero keep with InvalidArgs" {
 test "run reaches the workflow with valid args" {
     var environ = std.process.Environ.Map.init(std.testing.allocator);
     defer environ.deinit();
+    var ebuf: [1024]u8 = undefined;
+    var ewriter = std.Io.Writer.fixed(&ebuf);
     var deps = test_runner;
     deps.environ = &environ;
+    deps.err_writer = &ewriter;
 
     var memory: [16384]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&memory);
@@ -473,8 +486,11 @@ test "run reaches the workflow with valid args" {
 test "run rejects invalid config with InvalidConfig" {
     var environ = std.process.Environ.Map.init(std.testing.allocator);
     defer environ.deinit();
+    var ebuf: [1024]u8 = undefined;
+    var ewriter = std.Io.Writer.fixed(&ebuf);
     var deps = test_runner;
     deps.environ = &environ;
+    deps.err_writer = &ewriter;
 
     var memory: [16384]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&memory);
@@ -485,14 +501,17 @@ test "run rejects invalid config with InvalidConfig" {
         cli.Error.InvalidConfig,
         run(std.testing.io, &writer, &.{ "zix", "-r", "" }, deps, &static_allocator),
     );
-    try std.testing.expect(std.mem.indexOf(u8, &buf, "repo path cannot be empty") != null);
+    try std.testing.expect(std.mem.indexOf(u8, &ebuf, "repo path cannot be empty") != null);
 }
 
 test "run with dry-run prints commands" {
     var environ = std.process.Environ.Map.init(std.testing.allocator);
     defer environ.deinit();
+    var ebuf: [1024]u8 = undefined;
+    var ewriter = std.Io.Writer.fixed(&ebuf);
     var deps = test_runner;
     deps.environ = &environ;
+    deps.err_writer = &ewriter;
 
     var memory: [16384]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&memory);
@@ -506,8 +525,11 @@ test "run with dry-run prints commands" {
 test "run rejects unknown hostname before any command runs" {
     var environ = std.process.Environ.Map.init(std.testing.allocator);
     defer environ.deinit();
+    var ebuf: [1024]u8 = undefined;
+    var ewriter = std.Io.Writer.fixed(&ebuf);
     var deps = test_runner;
     deps.environ = &environ;
+    deps.err_writer = &ewriter;
     commands_run = 0;
 
     var memory: [16384]u8 = undefined;

@@ -47,13 +47,13 @@ fn testConfirm(_: *std.Io.Writer, _: bool, _: ?[]const u8) anyerror!bool {
 /// Prints a red error message.
 pub fn printError(writer: *std.Io.Writer, msg: []const u8) !void {
     std.debug.assert(msg.len > 0);
-    try io.printTo(writer, "{s}{s}{s}\n", .{ io.Red, msg, io.Reset });
+    try io.printTo(writer, "{s}{s}{s}\n", .{ io.style(io.Red), msg, io.style(io.Reset) });
 }
 
 /// Prints a green success message.
 pub fn printSuccess(writer: *std.Io.Writer, msg: []const u8) !void {
     std.debug.assert(msg.len > 0);
-    try io.printTo(writer, "{s}{s}{s}\n", .{ io.Green, msg, io.Reset });
+    try io.printTo(writer, "{s}{s}{s}\n", .{ io.style(io.Green), msg, io.style(io.Reset) });
 }
 
 /// Prints captured command output verbatim.
@@ -76,7 +76,15 @@ pub fn printTitle(writer: *std.Io.Writer, text: []const u8) !void {
     try io.printTo(
         writer,
         "{s}\n{s}\n* {s}{s}{s} *\n{s}\n{s}",
-        .{ io.Blue, border, io.Red, text, io.Blue, border, io.Reset },
+        .{
+            io.style(io.Blue),
+            border,
+            io.style(io.Red),
+            text,
+            io.style(io.Blue),
+            border,
+            io.style(io.Reset),
+        },
     );
 }
 
@@ -108,7 +116,7 @@ pub fn printVersion(writer: *std.Io.Writer, version: []const u8) !void {
     try io.printTo(
         writer,
         "{s}\nZIX version: {s}{s}\n{s}",
-        .{ io.Yellow, io.Cyan, version, io.Reset },
+        .{ io.style(io.Yellow), io.style(io.Cyan), version, io.style(io.Reset) },
     );
 }
 
@@ -122,13 +130,13 @@ fn printConfigLine(
     std.debug.assert(label.len > 0);
     const value_fmt = comptime if (@TypeOf(value) == []const u8) "{" ++ "s}" else "{" ++ "}";
     try io.printTo(writer, "{s}◉ {s}{s}{s} = {s}" ++ value_fmt ++ "{s}\n", .{
-        io.Cyan,
-        io.Red,
+        io.style(io.Cyan),
+        io.style(io.Red),
         label,
-        io.Reset,
-        io.Cyan,
+        io.style(io.Reset),
+        io.style(io.Cyan),
         value,
-        io.Reset,
+        io.style(io.Reset),
     });
 }
 
@@ -182,14 +190,25 @@ fn writeConfirmPrompt(
     default_value: bool,
     msg: ?[]const u8,
 ) !void {
-    const hint = if (default_value)
-        std.fmt.comptimePrint("{s}(Y/n){s}", .{ io.Green, io.Reset })
-    else
-        std.fmt.comptimePrint("{s}(y/N){s}", .{ io.Red, io.Reset });
+    const hint_color = if (default_value) io.Green else io.Red;
+    const hint = if (default_value) "(Y/n)" else "(y/N)";
     if (msg) |value| {
-        try io.printTo(writer, "\n{s}{s}{s} {s}: ", .{ io.Yellow, value, io.Reset, hint });
+        try io.printTo(writer, "\n{s}{s}{s} {s}{s}{s}: ", .{
+            io.style(io.Yellow),
+            value,
+            io.style(io.Reset),
+            io.style(hint_color),
+            hint,
+            io.style(io.Reset),
+        });
     } else {
-        try io.printTo(writer, "\n{s}Proceed?{s} {s}: ", .{ io.Yellow, io.Reset, hint });
+        try io.printTo(writer, "\n{s}Proceed?{s} {s}{s}{s}: ", .{
+            io.style(io.Yellow),
+            io.style(io.Reset),
+            io.style(hint_color),
+            hint,
+            io.style(io.Reset),
+        });
     }
     try writer.flush();
 }
@@ -249,6 +268,21 @@ test "printError and printSuccess wrap in color" {
     try printSuccess(&writer2, "good");
     try std.testing.expect(std.mem.indexOf(u8, &buf2, "good") != null);
     try std.testing.expect(std.mem.indexOf(u8, &buf2, io.Green) != null);
+}
+
+test "styles are dropped when color is disabled" {
+    io.color_enabled = false;
+    defer io.color_enabled = true;
+
+    var buf: [256]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    try printError(&writer, "bad");
+    try std.testing.expectEqualStrings("bad\n", buf[0..writer.end]);
+
+    var buf2: [256]u8 = undefined;
+    var writer2 = std.Io.Writer.fixed(&buf2);
+    try printTitle(&writer2, "ZIX");
+    try std.testing.expect(std.mem.indexOf(u8, buf2[0..writer2.end], "\x1b[") == null);
 }
 
 test "printOutput writes verbatim" {

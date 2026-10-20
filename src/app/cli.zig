@@ -35,6 +35,8 @@ pub const Deps = struct {
     runner: process.Runner,
     /// User-facing output port.
     ui: ui_mod.UserIo,
+    /// Diagnostics writer (stderr in production, a fixed buffer in tests).
+    err_writer: *std.Io.Writer,
     /// Environment variables (HOME / HOSTNAME).
     environ: *std.process.Environ.Map,
 };
@@ -108,7 +110,7 @@ pub fn execute(
 
     try stage(io, writer, config, commands, deps);
     try rebuild(io, writer, commands, deps);
-    try cleanup(io, writer, commands, deps);
+    try cleanup(io, commands, deps);
 
     if (config.diff) try showDiff(io, writer, commands, deps);
 }
@@ -117,11 +119,11 @@ pub fn execute(
 fn pull(io: std.Io, writer: *std.Io.Writer, commands: Commands, deps: Deps) anyerror!void {
     try deps.ui.title(writer, "Git Pull");
     if (try deps.runner.probe(io, &commands.git_rev_parse) != 0) {
-        try deps.ui.err(writer, "Repository is not a git working tree");
+        try deps.ui.err(deps.err_writer, "Repository is not a git working tree");
         return Error.NotAGitRepo;
     }
     if (try deps.runner.run(io, &commands.git_pull) != 0) {
-        try deps.ui.err(writer, "Failed to pull changes");
+        try deps.ui.err(deps.err_writer, "Failed to pull changes");
         return Error.GitPullFailed;
     }
 }
@@ -130,7 +132,7 @@ fn pull(io: std.Io, writer: *std.Io.Writer, commands: Commands, deps: Deps) anye
 fn flakeUpdate(io: std.Io, writer: *std.Io.Writer, commands: Commands, deps: Deps) anyerror!void {
     try deps.ui.title(writer, "Nix Update");
     if (try deps.runner.run(io, &commands.nix_update) != 0) {
-        try deps.ui.err(writer, "Failed to update flake inputs");
+        try deps.ui.err(deps.err_writer, "Failed to update flake inputs");
         return Error.FlakeUpdateFailed;
     }
 }
@@ -146,7 +148,7 @@ fn stage(
     const status = try deps.runner.capture(io, deps.allocator, &commands.git_status);
     defer status.deinit(deps.allocator);
     if (status.code != 0) {
-        try deps.ui.err(writer, "Failed to read repository status");
+        try deps.ui.err(deps.err_writer, "Failed to read repository status");
         return Error.GitStatusFailed;
     }
     if (std.mem.trim(u8, status.stdout, " \t\r\n").len == 0) return;
@@ -159,12 +161,12 @@ fn stage(
         true,
         "Do you want to add these changes to the stage?",
     ))) {
-        try deps.ui.err(writer, "Changes not added to stage");
+        try deps.ui.err(deps.err_writer, "Changes not added to stage");
         return;
     }
 
     if (try deps.runner.run(io, &commands.git_add) != 0) {
-        try deps.ui.err(writer, "Failed to add changes to the stage");
+        try deps.ui.err(deps.err_writer, "Failed to add changes to the stage");
         return Error.GitAddFailed;
     }
     try deps.ui.success(writer, "Changes added to git stage successfully");
@@ -174,19 +176,19 @@ fn stage(
 fn rebuild(io: std.Io, writer: *std.Io.Writer, commands: Commands, deps: Deps) anyerror!void {
     try deps.ui.title(writer, "Nixos Rebuild");
     if (try deps.runner.run(io, &commands.nix_rebuild) != 0) {
-        try deps.ui.err(writer, "Nixos rebuild failed");
+        try deps.ui.err(deps.err_writer, "Nixos rebuild failed");
         return Error.RebuildFailed;
     }
 }
 
 /// Prunes old generations and frees unreferenced store paths.
-fn cleanup(io: std.Io, writer: *std.Io.Writer, commands: Commands, deps: Deps) anyerror!void {
+fn cleanup(io: std.Io, commands: Commands, deps: Deps) anyerror!void {
     if (try deps.runner.run(io, &commands.nix_keep) != 0) {
-        try deps.ui.err(writer, "Cleanup failed");
+        try deps.ui.err(deps.err_writer, "Cleanup failed");
         return Error.CleanupFailed;
     }
     if (try deps.runner.run(io, &commands.nix_gc) != 0) {
-        try deps.ui.err(writer, "Cleanup failed");
+        try deps.ui.err(deps.err_writer, "Cleanup failed");
         return Error.CleanupFailed;
     }
 }
@@ -197,7 +199,7 @@ fn showDiff(io: std.Io, writer: *std.Io.Writer, commands: Commands, deps: Deps) 
     const output = try deps.runner.capture(io, deps.allocator, &commands.nix_diff);
     defer output.deinit(deps.allocator);
     if (output.code != 0) {
-        try deps.ui.err(writer, "Failed to compute closure diff");
+        try deps.ui.err(deps.err_writer, "Failed to compute closure diff");
         return Error.DiffFailed;
     }
     const tail = cmd.tailFromLastVersion(output.stdout);
@@ -249,6 +251,15 @@ var last_success: []const u8 = "";
 var last_output: []const u8 = "";
 var output_copy: [1024]u8 = undefined;
 var output_len: usize = 0;
+
+var test_err_buf: [4096]u8 = undefined;
+var test_err_state: std.Io.Writer = undefined;
+
+/// Returns a fresh fixed-buffer writer for diagnostics in tests.
+fn testErrWriter() *std.Io.Writer {
+    test_err_state = std.Io.Writer.fixed(&test_err_buf);
+    return &test_err_state;
+}
 
 fn resetMocks() void {
     fail_needle = null;
@@ -332,6 +343,7 @@ fn testDeps(allocator: std.mem.Allocator, environ: *std.process.Environ.Map) Dep
             .config = mockConfig,
         },
         .environ = environ,
+        .err_writer = testErrWriter(),
     };
 }
 

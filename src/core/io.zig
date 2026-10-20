@@ -23,24 +23,75 @@ pub fn printTo(
 
 // --- ANSI Styles ---
 
+/// Whether ANSI style sequences are emitted. Set once at startup from
+/// `colorSupported`; tests may toggle it.
+pub var color_enabled: bool = true;
+
+/// Returns `code` when color is enabled, otherwise an empty string.
+pub fn style(code: []const u8) []const u8 {
+    return if (color_enabled) code else "";
+}
+
+/// True when the environment and stdout allow colored output: `NO_COLOR` is
+/// unset or empty, `TERM` is not `dumb`, and stdout is a terminal.
+pub fn colorSupported(io: std.Io, environ: *std.process.Environ.Map) bool {
+    if (!colorAllowedByEnv(environ)) return false;
+    return std.Io.File.stdout().isTty(io) catch false;
+}
+
+/// Environment half of `colorSupported`: `NO_COLOR` and `TERM=dumb` opt out.
+fn colorAllowedByEnv(environ: *std.process.Environ.Map) bool {
+    if (environ.get("NO_COLOR")) |value| {
+        if (value.len > 0) return false;
+    }
+    if (environ.get("TERM")) |term| {
+        if (std.mem.eql(u8, term, "dumb")) return false;
+    }
+    return true;
+}
+
 /// ANSI foreground color escape sequences and reset codes.
 pub const Red = "\x1b[31m";
 pub const Green = "\x1b[32m";
 pub const Yellow = "\x1b[33m";
 pub const Blue = "\x1b[34m";
-pub const Magenta = "\x1b[35m";
 pub const Cyan = "\x1b[36m";
-pub const Gray = "\x1b[37m";
-pub const Black = "\x1b[30m";
 pub const Reset = "\x1b[0m";
-pub const Bold = "\x1b[1m";
-pub const Underline = "\x1b[4m";
 
 test "printTo writes exact bytes" {
     var buf: [256]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buf);
     try printTo(&writer, "hello {d} {s}", .{ 42, "world" });
     try std.testing.expectEqualStrings("hello 42 world", buf[0..14]);
+}
+
+test "style honors color_enabled" {
+    color_enabled = false;
+    defer color_enabled = true;
+    try std.testing.expectEqualStrings("", style(Red));
+    try std.testing.expectEqualStrings("", style(Reset));
+    color_enabled = true;
+    try std.testing.expectEqualStrings(Red, style(Red));
+}
+
+test "colorSupported honors NO_COLOR and TERM" {
+    var environ = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ.deinit();
+
+    try std.testing.expect(colorAllowedByEnv(&environ));
+
+    try environ.put("NO_COLOR", "1");
+    try std.testing.expect(!colorAllowedByEnv(&environ));
+    try environ.put("NO_COLOR", "");
+    try std.testing.expect(colorAllowedByEnv(&environ));
+
+    try environ.put("TERM", "dumb");
+    try std.testing.expect(!colorAllowedByEnv(&environ));
+    try environ.put("TERM", "xterm-256color");
+    try std.testing.expect(colorAllowedByEnv(&environ));
+
+    // The terminal probe depends on the real stdout; just exercise it.
+    _ = colorSupported(std.testing.io, &environ);
 }
 
 test "style constants are non-empty" {
