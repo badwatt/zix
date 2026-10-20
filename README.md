@@ -103,6 +103,8 @@ Autodoc uses `///` (declarations) and `//!` (module-level) comments. No doc comm
  -r, --repo      : set repo path (default is $HOME/.dotfiles)
  -n, --hostname  : set hostname (default is OS hostname)
  -k, --keep      : set generations to keep (default is 10)
+ -j, --jobs      : set max parallel builds (default is nix config)
+ -c, --cores     : set max parallel jobs per build (default is nix config)
  -u, --update    : set update to true (default is false)
  -d, --diff      : set diff to true (default is false)
  -y, --yes       : assume yes for all prompts (default is false)
@@ -127,6 +129,48 @@ shell script or the newer `-ng` rewrite and uses the compatible flags:
 `--elevate=sudo` and `--no-reexec` on `-ng`, `sudo` and `--fast` on
 classic. The self re-exec is always skipped to avoid its extra
 evaluation.
+
+### Out-of-memory during rebuild
+
+A rebuild compiles derivations inside the terminal's transient systemd scope.
+If Nix runs too much in parallel, the kernel OOM killer can kill a process in
+that scope; systemd then applies `OOMPolicy=stop` and terminates the whole
+scope, so the shell reports `terminated` and zix disappears mid-rebuild.
+
+Two independent knobs control parallelism, and the worst case is roughly
+`max-jobs × cores` concurrent compiler processes:
+
+- `--cores`: jobs inside **one** derivation (`nixos-rebuild --cores N`).
+  This is the one that matters when a single heavy package (e.g. a large C++
+  project) is compiling with all cores.
+- `--jobs`: how many **derivations** build at once
+  (`nixos-rebuild --max-jobs N`). This matters when many packages build in
+  parallel.
+
+Nix's defaults are `max-jobs = auto` (one per thread) and `cores = 0`
+(all cores), so a 16-thread machine can start 16 compilers for a single
+derivation. When a few GiB are already in use, 16 compilers at ~350 MiB each
+plus linkers is enough to trigger the OOM killer.
+
+Start with a per-build cap and lower `--jobs` if several derivations run:
+
+```sh
+zix -du -c 4          # single heavy derivation
+zix -du -j 2 -c 4     # at most ~8 compilers across builds
+```
+
+or set it system-wide:
+
+```nix
+{
+  nix.settings.max-jobs = 2;
+  nix.settings.cores = 4;
+}
+```
+
+Both flags are passed through as `nixos-rebuild --max-jobs <n> --cores <n>`;
+when omitted, the Nix configuration is used unchanged. If the rebuild child
+dies from a signal, zix reports it and points at `--cores`/`--jobs`.
 
 ## Project Structure
 

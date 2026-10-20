@@ -49,7 +49,7 @@ pub const Commands = struct {
     git_rev_parse: [5][]const u8,
     git_add: [5][]const u8,
     nix_update: [5][]const u8,
-    nix_rebuild: [7][]const u8,
+    nix_rebuild: cmd.Rebuild,
     nix_keep: [6][]const u8,
     nix_gc: [2][]const u8,
     nix_diff: [5][]const u8,
@@ -65,16 +65,17 @@ pub fn buildCommands(
     std.debug.assert(config.hostname.len > 0);
     std.debug.assert(config.keep > 0);
 
+    const flake = try cmd.formatFlake(allocator, config.repo, config.hostname);
+    const max_jobs = if (config.jobs) |jobs| try cmd.formatCount(allocator, jobs) else null;
+    const cores = if (config.cores) |value| try cmd.formatCount(allocator, value) else null;
+
     return .{
         .git_pull = cmd.gitPull(config.repo),
         .git_status = cmd.gitStatus(config.repo),
         .git_rev_parse = cmd.gitRevParse(config.repo),
         .git_add = cmd.gitAdd(config.repo),
         .nix_update = cmd.nixUpdate(config.repo),
-        .nix_rebuild = cmd.nixRebuild(
-            try cmd.formatFlake(allocator, config.repo, config.hostname),
-            flavor,
-        ),
+        .nix_rebuild = cmd.nixRebuild(flake, flavor, max_jobs, cores),
         .nix_keep = cmd.nixKeep(try cmd.formatKeep(allocator, config.keep)),
         .nix_gc = cmd.nixCollectGarbage(),
         .nix_diff = cmd.nixDiffClosures(),
@@ -180,8 +181,18 @@ fn stage(
 /// Rebuilds and switches the system.
 fn rebuild(io: std.Io, writer: *std.Io.Writer, commands: Commands, deps: Deps) anyerror!void {
     try deps.ui.title(writer, "Nixos Rebuild");
-    if (try deps.runner.run(io, &commands.nix_rebuild) != 0) {
-        try deps.ui.err(deps.err_writer, "Nixos rebuild failed");
+    const code = try deps.runner.run(io, commands.nix_rebuild.slice());
+    if (code != 0) {
+        // 128 + N is the shell convention for a signal-terminated child. An
+        // out-of-memory kill can arrive this way, so point at --jobs.
+        if (code >= 128) {
+            try deps.ui.err(
+                deps.err_writer,
+                "nixos-rebuild was terminated by a signal; if the build ran out of memory, lower --cores/--jobs",
+            );
+        } else {
+            try deps.ui.err(deps.err_writer, "Nixos rebuild failed");
+        }
         return Error.RebuildFailed;
     }
 }
@@ -245,6 +256,7 @@ pub fn exitCode(err: anyerror) u8 {
 // --- Test mocks ---
 
 var fail_needle: ?[]const u8 = null;
+var fail_code: i32 = 1;
 var capture_code: i32 = 0;
 var capture_code_needle: ?[]const u8 = null;
 var capture_output: []const u8 = "";
@@ -270,6 +282,7 @@ fn testErrWriter() *std.Io.Writer {
 
 fn resetMocks() void {
     fail_needle = null;
+    fail_code = 1;
     capture_code = 0;
     capture_code_needle = null;
     capture_output = "";
@@ -294,7 +307,7 @@ fn hasArg(argv: process.Runner.Command, needle: []const u8) bool {
 
 fn mockRun(_: ?*anyopaque, _: std.Io, argv: process.Runner.Command) anyerror!i32 {
     if (fail_needle) |needle| {
-        if (hasArg(argv, needle)) return 1;
+        if (hasArg(argv, needle)) return fail_code;
     }
     return 0;
 }
@@ -368,16 +381,53 @@ test "buildCommands populates every field" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const commands = try buildCommands(testConfig("host"), .ng, arena.allocator());
+    const rebuild_argv = commands.nix_rebuild.slice();
     try std.testing.expectEqualStrings("git", commands.git_pull[0]);
     try std.testing.expectEqualStrings("--porcelain", commands.git_status[4]);
     try std.testing.expectEqualStrings("--is-inside-work-tree", commands.git_rev_parse[4]);
     try std.testing.expectEqualStrings(".", commands.git_add[4]);
     try std.testing.expectEqualStrings("/repo", commands.nix_update[4]);
-    try std.testing.expectEqualStrings("/repo#host", commands.nix_rebuild[5]);
-    try std.testing.expectEqualStrings("--elevate=sudo", commands.nix_rebuild[2]);
+    try std.testing.expectEqualStrings("/repo#host", rebuild_argv[5]);
+    try std.testing.expectEqualStrings("--elevate=sudo", rebuild_argv[2]);
     try std.testing.expectEqualStrings("+10", commands.nix_keep[5]);
     try std.testing.expectEqualStrings("nix-collect-garbage", commands.nix_gc[1]);
     try std.testing.expectEqualStrings("diff-closures", commands.nix_diff[2]);
+}
+
+test "buildCommands passes --max-jobs and --cores when set" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var config = testConfig("host");
+    config.jobs = 4;
+    config.cores = 6;
+    const commands = try buildCommands(config, .ng, arena.allocator());
+    const rebuild_argv = commands.nix_rebuild.slice();
+    try std.testing.expectEqualStrings("--max-jobs", rebuild_argv[4]);
+    try std.testing.expectEqualStrings("4", rebuild_argv[5]);
+    try std.testing.expectEqualStrings("--cores", rebuild_argv[6]);
+    try std.testing.expectEqualStrings("6", rebuild_argv[7]);
+    try std.testing.expectEqualStrings("/repo#host", rebuild_argv[9]);
+}
+
+test "execute reports a signal-terminated rebuild" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var environ = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ.deinit();
+    resetMocks();
+    fail_needle = "switch";
+    fail_code = 143;
+
+    var config = testConfig("host");
+    config.yes = true;
+    const commands = try buildCommands(config, .ng, arena.allocator());
+    var buf: [512]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    try std.testing.expectError(
+        Error.RebuildFailed,
+        execute(std.testing.io, &writer, config, commands, testDeps(arena.allocator(), &environ)),
+    );
+    try std.testing.expect(std.mem.indexOf(u8, last_error, "signal") != null);
 }
 
 test "detectFlavor picks compatible flavor" {

@@ -85,6 +85,16 @@ test "dry run prints commands without executing" {
     try std.testing.expect(std.mem.indexOf(u8, result.stdout, "nixos-rebuild") != null);
 }
 
+test "jobs and cores flags flow into the rebuild command" {
+    const result = try run(&.{
+        "--dry-run", "-y", "-n", "testhost", "-r", "/tmp", "-j", "4", "-c", "6",
+    });
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(i32, 0), result.code());
+    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "--max-jobs 4") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "--cores 6") != null);
+}
+
 test "unknown hostname aborts before rebuild" {
     const result = try run(&.{ "--dry-run", "-y", "-n", "unknown", "-r", "/tmp" });
     defer result.deinit(std.testing.allocator);
