@@ -141,7 +141,8 @@ fn printConfigLine(
 }
 
 /// Prints the visible config fields with colored labels via `printConfigLine`.
-/// Input-only flags (`yes`, `dry_run`) are omitted. Always ends with a newline
+/// `yes` is omitted (it only skips prompts); `dry-run` is shown when set so the
+/// user never mistakes a dry run for a real one. Always ends with a newline
 /// so a following `printTitle` renders its leading newline as a blank line.
 pub fn configPrint(writer: *std.Io.Writer, config: Config) !void {
     std.debug.assert(config.repo.len > 0);
@@ -150,6 +151,7 @@ pub fn configPrint(writer: *std.Io.Writer, config: Config) !void {
     try printConfigLine(writer, "keep", config.keep);
     try printConfigLine(writer, "update", config.update);
     try printConfigLine(writer, "diff", config.diff);
+    if (config.dry_run) try printConfigLine(writer, "dry-run", config.dry_run);
 }
 
 /// Reads a yes/no answer from stdin using raw posix.read.
@@ -317,6 +319,9 @@ test "printVersion writes version" {
 }
 
 test "configPrint renders visible fields only" {
+    io.color_enabled = false;
+    defer io.color_enabled = true;
+
     var buf: [1024]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buf);
     const config = Config{
@@ -335,11 +340,26 @@ test "configPrint renders visible fields only" {
     try std.testing.expect(std.mem.indexOf(u8, out, "keep") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "update") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "diff") != null);
-    // Input-only flags are hidden from the summary.
+    // `yes` is hidden; `dry-run` is shown because it changes what happens.
     try std.testing.expect(std.mem.indexOf(u8, out, "yes") == null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "dry_run") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "dry-run = true") != null);
     // Ends with a newline so the next title renders a separating blank line.
     try std.testing.expectEqual(@as(u8, '\n'), out[out.len - 1]);
+}
+
+test "configPrint omits dry-run when it is off" {
+    var buf: [1024]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    try configPrint(&writer, Config{
+        .repo = "r",
+        .hostname = "h",
+        .keep = 1,
+        .update = false,
+        .diff = false,
+        .yes = false,
+        .dry_run = false,
+    });
+    try std.testing.expect(std.mem.indexOf(u8, buf[0..writer.end], "dry-run") == null);
 }
 
 test "config block is separated from the next title by a blank line" {
@@ -352,7 +372,7 @@ test "config block is separated from the next title by a blank line" {
         .update = false,
         .diff = false,
         .yes = true,
-        .dry_run = true,
+        .dry_run = false,
     });
     try printTitle(&writer, "Git Pull");
     const out = buf[0..writer.end];
