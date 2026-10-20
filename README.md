@@ -111,7 +111,8 @@ Autodoc uses `///` (declarations) and `//!` (module-level) comments. No doc comm
  -v, --version   : Display the current version
 ```
 
-Exit codes: `0` success, `1` runtime failure, `2` invalid arguments or config.
+Exit codes: `0` success, `1` runtime failure, `2` invalid arguments or config,
+`141` when stdout is closed early (SIGPIPE convention, e.g. `zix | head`).
 Diagnostics go to stderr; stdout carries only the normal report. ANSI colors
 are disabled when stdout is not a terminal, when `NO_COLOR` is set, or when
 `TERM=dumb`.
