@@ -5,6 +5,10 @@ on:
     branches: ["main"]
   pull_request:
 
+# Least privilege: the job only reads the repository to build and test.
+permissions:
+  contents: read
+
 jobs:
   check:
     runs-on: ubuntu-latest
