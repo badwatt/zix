@@ -151,6 +151,7 @@ fn stage(
     const status = try deps.runner.capture(io, deps.allocator, &commands.git_status);
     defer status.deinit(deps.allocator);
     if (status.code != 0) {
+        if (status.stderr.len > 0) try deps.ui.output(deps.err_writer, status.stderr);
         try deps.ui.err(deps.err_writer, "Failed to read repository status");
         return Error.GitStatusFailed;
     }
@@ -203,6 +204,7 @@ fn showDiff(io: std.Io, writer: *std.Io.Writer, commands: Commands, deps: Deps) 
     const output = try deps.runner.capture(io, deps.allocator, &commands.nix_diff);
     defer output.deinit(deps.allocator);
     if (output.code != 0) {
+        if (output.stderr.len > 0) try deps.ui.output(deps.err_writer, output.stderr);
         try deps.ui.err(deps.err_writer, "Failed to compute closure diff");
         return Error.DiffFailed;
     }
@@ -246,6 +248,7 @@ var fail_needle: ?[]const u8 = null;
 var capture_code: i32 = 0;
 var capture_code_needle: ?[]const u8 = null;
 var capture_output: []const u8 = "";
+var capture_stderr: []const u8 = "";
 var probe_result: i32 = 0;
 var probe_error: bool = false;
 var confirm_count: u32 = 0;
@@ -270,6 +273,7 @@ fn resetMocks() void {
     capture_code = 0;
     capture_code_needle = null;
     capture_output = "";
+    capture_stderr = "";
     probe_result = 0;
     probe_error = false;
     confirm_count = 0;
@@ -306,7 +310,8 @@ fn mockCapture(
     else
         capture_code;
     const out = try allocator.dupe(u8, capture_output);
-    return .{ .code = code, .stdout = out, .stderr = &.{} };
+    const err = try allocator.dupe(u8, capture_stderr);
+    return .{ .code = code, .stdout = out, .stderr = err };
 }
 
 fn mockProbe(_: ?*anyopaque, _: std.Io, _: process.Runner.Command) anyerror!i32 {
@@ -494,6 +499,7 @@ test "execute fails when git status cannot be read" {
     defer environ.deinit();
     resetMocks();
     capture_code = 2;
+    capture_stderr = "fatal: not a git repository\n";
 
     var config = testConfig("host");
     config.yes = true;
@@ -504,6 +510,7 @@ test "execute fails when git status cannot be read" {
         Error.GitStatusFailed,
         execute(std.testing.io, &writer, config, commands, testDeps(arena.allocator(), &environ)),
     );
+    try std.testing.expect(std.mem.indexOf(u8, last_output, "fatal: not a git repository") != null);
 }
 
 test "execute stages changes when confirmed" {
