@@ -48,14 +48,18 @@ pub const Config = struct {
         return null;
     }
 
-    /// Expands a leading `~` to `home`. Returns `path` unchanged when it does
-    /// not start with `~` or when `home` is null.
+    /// Expands a leading `~` (alone or followed by `/`) to `home`. Returns
+    /// `path` unchanged for `~user` forms, paths not starting with `~`, or
+    /// when `home` is null.
     pub fn expandTilde(
         allocator: std.mem.Allocator,
         home: ?[]const u8,
         path: []const u8,
     ) ![]const u8 {
         if (path.len == 0 or path[0] != '~') return path;
+        // Only `~` and `~/...` are home-relative; `~user` is not supported and
+        // must not be spliced onto $HOME.
+        if (path.len > 1 and path[1] != '/') return path;
         const h = home orelse return path;
         return std.fmt.allocPrint(allocator, "{s}{s}", .{ h, path[1..] });
     }
@@ -98,6 +102,22 @@ test "expandTilde expands home" {
     const expanded = try Config.expandTilde(alloc, "/home/u", "~/.dotfiles");
     defer alloc.free(expanded);
     try std.testing.expectEqualStrings("/home/u/.dotfiles", expanded);
+
+    const bare = try Config.expandTilde(alloc, "/home/u", "~");
+    defer alloc.free(bare);
+    try std.testing.expectEqualStrings("/home/u", bare);
+}
+
+test "expandTilde leaves ~user paths untouched" {
+    const alloc = std.testing.allocator;
+    try std.testing.expectEqualStrings(
+        "~bob/dots",
+        try Config.expandTilde(alloc, "/home/u", "~bob/dots"),
+    );
+    try std.testing.expectEqualStrings(
+        "~bob",
+        try Config.expandTilde(alloc, "/home/u", "~bob"),
+    );
 }
 
 test "expandTilde leaves paths untouched" {
