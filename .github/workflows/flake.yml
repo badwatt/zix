@@ -12,6 +12,12 @@ jobs:
     steps:
       - name: Checkout the repository
         uses: actions/checkout@v6
+        with:
+          # update-flake-lock (via create-pull-request) installs its own
+          # Authorization header. Keeping the one persisted by checkout too
+          # makes git send two Authorization headers and GitHub answers 400
+          # ("Duplicate header: Authorization").
+          persist-credentials: false
 
       - name: Install Nix
         uses: nixbuild/nix-quick-install-action@v28
