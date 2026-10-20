@@ -106,7 +106,7 @@ pub fn execute(
     if (config.update) try flakeUpdate(io, writer, commands, deps);
 
     try stage(io, writer, config, commands, deps);
-    try rebuild(io, writer, config, commands, deps);
+    try rebuild(io, writer, commands, deps);
     try cleanup(io, writer, commands, deps);
 
     if (config.diff) try showDiff(io, writer, commands, deps);
@@ -170,11 +170,7 @@ fn stage(
 }
 
 /// Rebuilds and switches the system.
-fn rebuild(io: std.Io, writer: *std.Io.Writer, config: Config, commands: Commands, deps: Deps) anyerror!void {
-    if (std.mem.eql(u8, config.hostname, "unknown")) {
-        try deps.ui.err(writer, "Could not determine hostname; pass --hostname");
-        return Error.HostnameUnknown;
-    }
+fn rebuild(io: std.Io, writer: *std.Io.Writer, commands: Commands, deps: Deps) anyerror!void {
     try deps.ui.title(writer, "Nixos Rebuild");
     if (try deps.runner.run(io, &commands.nix_rebuild) != 0) {
         try deps.ui.err(writer, "Nixos rebuild failed");
@@ -532,24 +528,6 @@ test "execute fails when git add fails" {
     var writer = std.Io.Writer.fixed(&buf);
     try std.testing.expectError(
         Error.GitAddFailed,
-        execute(std.testing.io, &writer, config, commands, testDeps(arena.allocator(), &environ)),
-    );
-}
-
-test "execute fails when hostname is unknown" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var environ = std.process.Environ.Map.init(std.testing.allocator);
-    defer environ.deinit();
-    resetMocks();
-
-    var config = testConfig("unknown");
-    config.yes = true;
-    const commands = try buildCommands(config, .ng, arena.allocator());
-    var buf: [512]u8 = undefined;
-    var writer = std.Io.Writer.fixed(&buf);
-    try std.testing.expectError(
-        Error.HostnameUnknown,
         execute(std.testing.io, &writer, config, commands, testDeps(arena.allocator(), &environ)),
     );
 }

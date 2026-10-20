@@ -51,6 +51,10 @@ pub fn run(
         return cli.Error.InvalidConfig;
     }
 
+    // Abort before any side effect (pull, flake update, staging) when the
+    // hostname could not be resolved or was forced to the sentinel.
+    if (std.mem.eql(u8, config.hostname, "unknown")) return cli.Error.HostnameUnknown;
+
     // `--dry-run` swaps the command runner for one that only prints.
     var dry = dry_run.DryRun{ .writer = writer };
     if (config.dry_run) deps_local.runner = dry.runner();
@@ -251,6 +255,9 @@ fn printParseError(writer: *std.Io.Writer, comptime fmt: []const u8, fmt_args: a
 
 // --- Tests ---
 
+/// Counts command-runner calls so tests can assert that nothing ran.
+var commands_run: u32 = 0;
+
 const test_runner = cli.Deps{
     .allocator = std.testing.allocator,
     .runner = .{ .runFn = noopRun, .captureFn = noopCapture, .probeFn = noopProbe },
@@ -266,6 +273,7 @@ const test_runner = cli.Deps{
 };
 
 fn noopRun(_: ?*anyopaque, _: std.Io, _: []const []const u8) anyerror!i32 {
+    commands_run += 1;
     return 0;
 }
 fn noopCapture(
@@ -274,9 +282,11 @@ fn noopCapture(
     allocator: std.mem.Allocator,
     _: []const []const u8,
 ) anyerror!@import("../core/process.zig").Capture {
+    commands_run += 1;
     return .{ .code = 0, .stdout = try allocator.dupe(u8, " M file\n"), .stderr = &.{} };
 }
 fn noopProbe(_: ?*anyopaque, _: std.Io, _: []const []const u8) anyerror!i32 {
+    commands_run += 1;
     return 0;
 }
 fn echoTitle(writer: *std.Io.Writer, text: []const u8) anyerror!void {
@@ -491,4 +501,23 @@ test "run with dry-run prints commands" {
     var writer = std.Io.Writer.fixed(&buf);
     try run(std.testing.io, &writer, &.{ "zix", "--dry-run", "-y", "-n", "host" }, deps, &static_allocator);
     try std.testing.expect(std.mem.indexOf(u8, &buf, "$ ") != null);
+}
+
+test "run rejects unknown hostname before any command runs" {
+    var environ = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ.deinit();
+    var deps = test_runner;
+    deps.environ = &environ;
+    commands_run = 0;
+
+    var memory: [16384]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&memory);
+    var static_allocator = StaticAllocator.init(fba.allocator());
+    var buf: [4096]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    try std.testing.expectError(
+        cli.Error.HostnameUnknown,
+        run(std.testing.io, &writer, &.{ "zix", "-n", "unknown" }, deps, &static_allocator),
+    );
+    try std.testing.expectEqual(@as(u32, 0), commands_run);
 }
