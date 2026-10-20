@@ -92,11 +92,13 @@ fn realProbe(_: ?*anyopaque, io: std.Io, argv: Runner.Command) anyerror!i32 {
     return termCode(try child.wait(io));
 }
 
-/// Exit code for a terminated child; signal-killed processes report 1.
+/// Exit code for a terminated child. A process killed or stopped by signal N
+/// reports the shell convention `128 + N`; unknown terminations report 1.
 fn termCode(term: std.process.Child.Term) i32 {
     return switch (term) {
         .exited => |code| code,
-        else => 1,
+        .signal, .stopped => |sig| 128 + @as(i32, @intCast(@backingInt(sig))),
+        .unknown => 1,
     };
 }
 
@@ -106,8 +108,8 @@ test "real run returns exit codes" {
     const io = std.testing.io;
     try std.testing.expectEqual(@as(i32, 0), try realRun(null, io, &.{"true"}));
     try std.testing.expectEqual(@as(i32, 1), try realRun(null, io, &.{"false"}));
-    // Signal-killed process maps to 1.
-    try std.testing.expectEqual(@as(i32, 1), try realRun(null, io, &.{ "sh", "-c", "kill -9 $$" }));
+    // Signal-killed process reports 128 + signal (SIGKILL = 9).
+    try std.testing.expectEqual(@as(i32, 137), try realRun(null, io, &.{ "sh", "-c", "kill -9 $$" }));
 }
 
 test "real run surfaces spawn errors" {
@@ -152,6 +154,8 @@ test "real probe returns exit codes silently" {
 
 test "termCode maps terminated variants" {
     try std.testing.expectEqual(@as(i32, 4), termCode(.{ .exited = 4 }));
+    try std.testing.expectEqual(@as(i32, 137), termCode(.{ .signal = .KILL }));
+    try std.testing.expectEqual(@as(i32, 143), termCode(.{ .stopped = .TERM }));
     try std.testing.expectEqual(@as(i32, 1), termCode(.{ .unknown = 9 }));
 }
 
