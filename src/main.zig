@@ -55,6 +55,10 @@ pub fn main(init: std.process.Init) !void {
     };
 
     app.run(io, &stdout_writer.interface, args_list.items, deps, &static_allocator) catch |err| {
+        // A closed stdout (e.g. `zix | head`) is a normal way to stop; report
+        // it the way a SIGPIPE'd process would instead of an "unexpected error".
+        if (err == error.WriteFailed) std.process.exit(141);
+
         // Use the same stderr writer as the workflow: mixing it with
         // `std.debug.print` corrupts the stream when stderr is a file.
         var err_buf: [256]u8 = undefined;
