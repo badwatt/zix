@@ -102,7 +102,10 @@ pub fn execute(
     try deps.ui.title(writer, "ZIX Configuration");
     try deps.ui.config(writer, config);
 
-    if (!config.yes and !(try deps.ui.confirm(writer, true, null))) return;
+    if (!config.yes and !(try deps.ui.confirm(writer, true, null))) {
+        try deps.ui.output(writer, "Aborted.\n");
+        return;
+    }
 
     try pull(io, writer, commands, deps);
 
@@ -161,7 +164,8 @@ fn stage(
         true,
         "Do you want to add these changes to the stage?",
     ))) {
-        try deps.ui.err(deps.err_writer, "Changes not added to stage");
+        // Nothing was staged, so the rebuild would evaluate a stale flake.
+        try deps.ui.err(deps.err_writer, "Changes not added to stage; aborting");
         return;
     }
 
@@ -421,6 +425,7 @@ test "execute aborts when initial confirmation is declined" {
     var writer = std.Io.Writer.fixed(&buf);
     try execute(std.testing.io, &writer, config, commands, testDeps(arena.allocator(), &environ));
     try std.testing.expectEqual(@as(u32, 1), confirm_count);
+    try std.testing.expectEqualStrings("Aborted.\n", last_output);
 }
 
 test "execute fails when repo is not a git work tree" {
@@ -533,7 +538,7 @@ test "execute declines staging changes" {
     var buf: [1024]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buf);
     try execute(std.testing.io, &writer, config, commands, testDeps(arena.allocator(), &environ));
-    try std.testing.expectEqualStrings("Changes not added to stage", last_error);
+    try std.testing.expectEqualStrings("Changes not added to stage; aborting", last_error);
 }
 
 test "execute fails when git add fails" {
