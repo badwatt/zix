@@ -166,7 +166,7 @@ fn stage(
         "Do you want to add these changes to the stage?",
     ))) {
         // Nothing was staged, so the rebuild would evaluate a stale flake.
-        try deps.ui.err(deps.err_writer, "Changes not added to stage; aborting");
+        try deps.ui.output(writer, "Changes not added to stage; aborting.\n");
         return;
     }
 
@@ -545,7 +545,7 @@ test "execute declines staging changes" {
     var buf: [1024]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buf);
     try execute(std.testing.io, &writer, config, commands, testDeps(arena.allocator(), &environ));
-    try std.testing.expectEqualStrings("Changes not added to stage; aborting", last_error);
+    try std.testing.expectEqualStrings("Changes not added to stage; aborting.\n", last_output);
 }
 
 test "execute fails when git add fails" {
