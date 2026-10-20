@@ -33,6 +33,7 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit and integration tests");
     addTest(b, mod, test_step);
     addIntegrationTests(b, target, optimize, exe, test_step);
+    addBuildTests(b, target, optimize, test_step);
     const docs_compile = addDocs(b, mod);
     addCoverage(b, mod, target, optimize);
     addDocsServe(b, target, optimize, docs_compile);
@@ -96,6 +97,24 @@ fn addIntegrationTests(
     });
     const run_tests = b.addRunArtifact(compile);
     run_tests.step.dependOn(&exe.step);
+    test_step.dependOn(&run_tests.step);
+}
+
+/// Adds tests for the build-time helper programs (`build/coverage.zig` and
+/// `build/serve.zig`) so they are not left uncovered by the test suite.
+fn addBuildTests(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    test_step: *std.Build.Step,
+) void {
+    const mod = b.createModule(.{
+        .root_source_file = b.path("build/tests.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const compile = b.addTest(.{ .name = "zix-build-test", .root_module = mod });
+    const run_tests = b.addRunArtifact(compile);
     test_step.dependOn(&run_tests.step);
 }
 
