@@ -9,13 +9,22 @@ on:
       - main
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: https://github.com/actions/checkout@v6
+      - uses: https://github.com/mlugg/setup-zig@v2
+      - run: zig build fmt:check
+      - run: zig build test --summary all
+
   tag:
+    needs: test
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.extract.outputs.version }}
       created: ${{ steps.extract.outputs.created }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: https://github.com/actions/checkout@v6
         with:
           fetch-depth: 0
       - id: extract
@@ -33,12 +42,31 @@ jobs:
             echo "created=true" >> $GITHUB_OUTPUT
           fi
 
+  build:
+    needs: tag
+    if: needs.tag.outputs.created == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x86_64-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: https://github.com/actions/checkout@v6
+        with:
+          ref: ${{ needs.tag.outputs.version }}
+      - uses: https://github.com/mlugg/setup-zig@v2
+      - run: zig build -Doptimize=ReleaseSafe -Dtarget=${{ matrix.target }}
+      - uses: https://github.com/actions/upload-artifact@v7
+        with:
+          name: zix-${{ matrix.target }}
+          path: zig-out/bin/zix
+
   release:
     needs: tag
     if: needs.tag.outputs.created == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: https://github.com/actions/checkout@v6
         with:
           fetch-depth: 0
           ref: ${{ needs.tag.outputs.version }}
@@ -59,7 +87,7 @@ jobs:
           echo "prev=$PREV" >> $GITHUB_OUTPUT
       - name: Build Changelog
         id: build_changelog
-        uses: https://github.com/mikepenz/release-changelog-builder-action@v6
+        uses: mikepenz/release-changelog-builder-action@v6
         with:
           fromTag: ${{ steps.prev.outputs.prev }}
           toTag: ${{ needs.tag.outputs.version }}
@@ -124,6 +152,10 @@ jobs:
             }
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: https://github.com/actions/download-artifact@v8
+        with:
+          path: artifacts
+          pattern: zix-*
       - uses: https://github.com/softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.tag.outputs.version }}
