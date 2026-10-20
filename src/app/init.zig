@@ -173,7 +173,7 @@ fn parseShort(
     config: *Config,
     writer: *std.Io.Writer,
 ) Step {
-    for (arg[1..]) |flag| {
+    for (arg[1..], 0..) |flag, index| {
         switch (flag) {
             'h' => return .{ .terminal = .help },
             'v' => return .{ .terminal = .version },
@@ -183,6 +183,12 @@ fn parseShort(
             'r', 'n', 'k' => {
                 var label_buf: [4]u8 = undefined;
                 const label = std.fmt.bufPrint(&label_buf, "-{c}", .{flag}) catch unreachable;
+                // A value flag consumes the next argv, so anything after it in
+                // the same cluster would be silently dropped. Reject instead.
+                if (index + 1 != arg.len - 1) {
+                    printParseError(writer, "\"{s}\" flag must be last in a cluster", .{label});
+                    return .{ .terminal = .invalid };
+                }
                 const value = takeValue(args, i, label, writer) orelse return .{ .terminal = .invalid };
                 return setValue(shortKey(flag), value, label, config, writer);
             },
@@ -203,6 +209,7 @@ fn shortKey(flag: u8) ValueKey {
 }
 
 /// Reads the argument following a value flag, or reports a missing value.
+/// Another flag is not accepted as a value.
 fn takeValue(
     args: []const []const u8,
     i: usize,
@@ -213,7 +220,12 @@ fn takeValue(
         printParseError(writer, "\"{s}\" flag requires an argument", .{label});
         return null;
     }
-    return args[i + 1];
+    const next = args[i + 1];
+    if (next.len > 1 and next[0] == '-') {
+        printParseError(writer, "\"{s}\" flag requires an argument", .{label});
+        return null;
+    }
+    return next;
 }
 
 /// Assigns `value` to the field selected by `key`.
@@ -367,6 +379,18 @@ test "parse folds short value flags" {
     try std.testing.expectEqual(@as(u8, 3), config.keep);
 }
 
+test "parse accepts a boolean flag before a value flag in a cluster" {
+    var buf: [256]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    var config = testConfig();
+    try std.testing.expectEqual(
+        Intent.run,
+        parseIntent(&.{ "zix", "-yr", "/r" }, &config, &writer),
+    );
+    try std.testing.expect(config.yes);
+    try std.testing.expectEqualStrings("/r", config.repo);
+}
+
 test "parse rejects invalid input and reports it" {
     const cases = &[_][]const []const u8{
         &.{ "zix", "unknown" },
@@ -379,6 +403,9 @@ test "parse rejects invalid input and reports it" {
         &.{ "zix", "--keep", "x" },
         &.{ "zix", "/repo", "extra" },
         &.{ "zix", "-r", "/repo", "trailing" },
+        &.{ "zix", "-ry", "/repo" },
+        &.{ "zix", "--repo", "--hostname", "h" },
+        &.{ "zix", "-n", "-r" },
     };
     for (cases) |args| {
         var buf: [512]u8 = undefined;
