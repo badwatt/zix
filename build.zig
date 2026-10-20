@@ -37,6 +37,22 @@ pub fn build(b: *std.Build) void {
     const docs_compile = addDocs(b, mod);
     addCoverage(b, mod, target, optimize);
     addDocsServe(b, target, optimize, docs_compile);
+    addFmt(b);
+}
+
+/// Adds `fmt` (rewrite in place) and `fmt:check` (fail on drift) steps.
+fn addFmt(b: *std.Build) void {
+    const paths: []const std.Build.LazyPath = &.{
+        b.path("build.zig"),
+        b.path("src"),
+        b.path("build"),
+        b.path("tests"),
+    };
+    const fmt = b.addFmt(.{ .paths = paths });
+    b.step("fmt", "Format source files").dependOn(&fmt.step);
+
+    const check = b.addFmt(.{ .paths = paths, .check = true });
+    b.step("fmt:check", "Check formatting").dependOn(&check.step);
 }
 
 /// Builds and installs the zix executable. Adds `run` step and returns the
@@ -123,7 +139,7 @@ fn addBuildTests(
 fn addCoverage(b: *std.Build, mod: *std.Build.Module, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
     // Test binary
     const test_compile = b.addTest(.{
-        .name = "zix-test",
+        .name = "zix-coverage-test",
         .root_module = mod,
         .use_llvm = true,
     });
