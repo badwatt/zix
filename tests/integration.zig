@@ -136,6 +136,27 @@ test "unknown hostname aborts before rebuild" {
     try std.testing.expect(std.mem.indexOf(u8, result.stderr, "hostname") != null);
 }
 
+test "completions flag prints a script for every shell" {
+    const cases = [_]struct { shell: []const u8, marker: []const u8 }{
+        .{ .shell = "bash", .marker = "complete -F _zix zix" },
+        .{ .shell = "zsh", .marker = "#compdef zix" },
+        .{ .shell = "fish", .marker = "complete -c zix" },
+    };
+    for (cases) |tc| {
+        const result = try run(&.{ "--completions", tc.shell });
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expectEqual(@as(i32, 0), result.code());
+        try std.testing.expect(std.mem.indexOf(u8, result.stdout, tc.marker) != null);
+    }
+}
+
+test "unknown completion shell exits with code 2" {
+    const result = try run(&.{ "--completions", "powershell" });
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(i32, 2), result.code());
+    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "Unknown shell") != null);
+}
+
 test "output has no ANSI escapes without a terminal" {
     var environ = std.process.Environ.Map.init(std.testing.allocator);
     defer environ.deinit();

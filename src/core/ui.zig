@@ -106,6 +106,7 @@ pub fn printHelp(writer: *std.Io.Writer) !void {
         \\     --dry-run   : print commands without executing them
         \\     --no-color  : disable colored output
         \\     --only      : run only these steps (pull,flake,stage,rebuild,cleanup,diff)
+        \\     --completions : print shell completions (bash,zsh,fish)
         \\ -h, --help      : Display this help message
         \\ -v, --version   : Display the current version
         \\

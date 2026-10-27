@@ -7,6 +7,7 @@
 const std = @import("std");
 const ui = @import("../core/ui.zig");
 const cli = @import("./cli.zig");
+const completions = @import("./completions.zig");
 const cmd = @import("../core/commands.zig");
 const dry_run = @import("../core/dry_run.zig");
 const hostname_mod = @import("./hostname.zig");
@@ -18,7 +19,13 @@ const StaticAllocator = @import("../core/static_allocator.zig");
 const VERSION = @import("zon").version;
 
 /// Result of interpreting command-line arguments.
-pub const Intent = enum { help, version, run, invalid };
+pub const Intent = union(enum) {
+    help,
+    version,
+    completions: completions.Shell,
+    run,
+    invalid,
+};
 
 /// Main orchestration function. Resolves the hostname, parses args, validates
 /// config, builds commands, and runs the workflow. Returns errors that `main`
@@ -43,6 +50,7 @@ pub fn run(
     switch (intent) {
         .help => return ui.printHelp(writer),
         .version => return ui.printVersion(writer, VERSION),
+        .completions => |shell| return completions.print(writer, shell),
         .invalid => return cli.Error.InvalidArgs,
         .run => {},
     }
@@ -170,6 +178,18 @@ fn parseLong(
     if (std.mem.eql(u8, name, "--no-color")) {
         if (rejectInline(name, inline_value, writer)) return .{ .terminal = .invalid };
         return .{ .consumed = 0 };
+    }
+    if (std.mem.eql(u8, name, "--completions")) {
+        const value = longValue(name, inline_value, args, i, writer) orelse
+            return .{ .terminal = .invalid };
+        const shell = completions.fromName(value.text) orelse {
+            printParseError(writer, "Unknown shell \"{s}\" (valid: {s})", .{
+                value.text,
+                completions.names,
+            });
+            return .{ .terminal = .invalid };
+        };
+        return .{ .terminal = .{ .completions = shell } };
     }
     if (std.mem.eql(u8, name, "--only")) {
         const value = longValue(name, inline_value, args, i, writer) orelse
@@ -430,6 +450,11 @@ fn yesConfirm(_: *std.Io.Writer, _: bool, _: ?[]const u8) anyerror!bool {
     return true;
 }
 
+const intent_run: Intent = .run;
+const intent_help: Intent = .help;
+const intent_version: Intent = .version;
+const intent_invalid: Intent = .invalid;
+
 fn parseIntent(args: []const []const u8, config: *Config, writer: *std.Io.Writer) Intent {
     return parse(args, config, writer);
 }
@@ -442,19 +467,19 @@ test "parse returns run for bare invocation" {
     var buf: [256]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buf);
     var config = testConfig();
-    try std.testing.expectEqual(Intent.run, parseIntent(&.{"zix"}, &config, &writer));
+    try std.testing.expectEqual(intent_run, parseIntent(&.{"zix"}, &config, &writer));
 }
 
 test "parse recognizes help and version words and flags" {
     var buf: [256]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buf);
     var config = testConfig();
-    try std.testing.expectEqual(Intent.help, parseIntent(&.{ "zix", "-h" }, &config, &writer));
-    try std.testing.expectEqual(Intent.help, parseIntent(&.{ "zix", "--help" }, &config, &writer));
-    try std.testing.expectEqual(Intent.help, parseIntent(&.{ "zix", "help" }, &config, &writer));
-    try std.testing.expectEqual(Intent.version, parseIntent(&.{ "zix", "-v" }, &config, &writer));
-    try std.testing.expectEqual(Intent.version, parseIntent(&.{ "zix", "--version" }, &config, &writer));
-    try std.testing.expectEqual(Intent.version, parseIntent(&.{ "zix", "version" }, &config, &writer));
+    try std.testing.expectEqual(intent_help, parseIntent(&.{ "zix", "-h" }, &config, &writer));
+    try std.testing.expectEqual(intent_help, parseIntent(&.{ "zix", "--help" }, &config, &writer));
+    try std.testing.expectEqual(intent_help, parseIntent(&.{ "zix", "help" }, &config, &writer));
+    try std.testing.expectEqual(intent_version, parseIntent(&.{ "zix", "-v" }, &config, &writer));
+    try std.testing.expectEqual(intent_version, parseIntent(&.{ "zix", "--version" }, &config, &writer));
+    try std.testing.expectEqual(intent_version, parseIntent(&.{ "zix", "version" }, &config, &writer));
 }
 
 test "parse folds boolean flags" {
@@ -462,7 +487,7 @@ test "parse folds boolean flags" {
     var writer = std.Io.Writer.fixed(&buf);
     var config = testConfig();
     try std.testing.expectEqual(
-        Intent.run,
+        intent_run,
         parseIntent(&.{ "zix", "-duy", "--update", "--dry-run", "--diff", "--yes", "--no-color" }, &config, &writer),
     );
     try std.testing.expect(config.update);
@@ -476,7 +501,7 @@ test "parse folds long value flags" {
     var writer = std.Io.Writer.fixed(&buf);
     var config = testConfig();
     try std.testing.expectEqual(
-        Intent.run,
+        intent_run,
         parseIntent(&.{ "zix", "--repo", "/r", "--hostname", "h", "--keep", "5" }, &config, &writer),
     );
     try std.testing.expectEqualStrings("/r", config.repo);
@@ -489,7 +514,7 @@ test "parse folds short value flags" {
     var writer = std.Io.Writer.fixed(&buf);
     var config = testConfig();
     try std.testing.expectEqual(
-        Intent.run,
+        intent_run,
         parseIntent(&.{ "zix", "-r", "/r", "-n", "h", "-k", "3" }, &config, &writer),
     );
     try std.testing.expectEqualStrings("/r", config.repo);
@@ -502,7 +527,7 @@ test "parse accepts a boolean flag before a value flag in a cluster" {
     var writer = std.Io.Writer.fixed(&buf);
     var config = testConfig();
     try std.testing.expectEqual(
-        Intent.run,
+        intent_run,
         parseIntent(&.{ "zix", "-yr", "/r" }, &config, &writer),
     );
     try std.testing.expect(config.yes);
@@ -514,7 +539,7 @@ test "parse accepts inline long values" {
     var writer = std.Io.Writer.fixed(&buf);
     var config = testConfig();
     try std.testing.expectEqual(
-        Intent.run,
+        intent_run,
         parseIntent(&.{
             "zix", "--repo=/r", "--hostname=h", "--keep=5", "--jobs=4", "--cores=2",
         }, &config, &writer),
@@ -531,7 +556,7 @@ test "parse accepts an inline value that starts with a dash" {
     var writer = std.Io.Writer.fixed(&buf);
     var config = testConfig();
     try std.testing.expectEqual(
-        Intent.run,
+        intent_run,
         parseIntent(&.{ "zix", "--repo=-weird" }, &config, &writer),
     );
     try std.testing.expectEqualStrings("-weird", config.repo);
@@ -543,28 +568,28 @@ test "parse folds the jobs flag" {
 
     var short = testConfig();
     try std.testing.expectEqual(
-        Intent.run,
+        intent_run,
         parseIntent(&.{ "zix", "-j", "4" }, &short, &writer),
     );
     try std.testing.expectEqual(@as(?u16, 4), short.jobs);
 
     var long = testConfig();
     try std.testing.expectEqual(
-        Intent.run,
+        intent_run,
         parseIntent(&.{ "zix", "--jobs", "2" }, &long, &writer),
     );
     try std.testing.expectEqual(@as(?u16, 2), long.jobs);
 
     var cores = testConfig();
     try std.testing.expectEqual(
-        Intent.run,
+        intent_run,
         parseIntent(&.{ "zix", "-c", "6" }, &cores, &writer),
     );
     try std.testing.expectEqual(@as(?u16, 6), cores.cores);
 
     var cores_long = testConfig();
     try std.testing.expectEqual(
-        Intent.run,
+        intent_run,
         parseIntent(&.{ "zix", "--cores", "3" }, &cores_long, &writer),
     );
     try std.testing.expectEqual(@as(?u16, 3), cores_long.cores);
@@ -575,7 +600,7 @@ test "parse accepts the numeric maximums" {
     var writer = std.Io.Writer.fixed(&buf);
     var config = testConfig();
     try std.testing.expectEqual(
-        Intent.run,
+        intent_run,
         parseIntent(&.{ "zix", "-k", "255", "-j", "65535", "-c", "65535" }, &config, &writer),
     );
     try std.testing.expectEqual(@as(u8, 255), config.keep);
@@ -598,8 +623,47 @@ test "parse reports the accepted numeric range" {
         var buf: [512]u8 = undefined;
         var writer = std.Io.Writer.fixed(&buf);
         var config = testConfig();
-        try std.testing.expectEqual(Intent.invalid, parseIntent(tc.args, &config, &writer));
+        try std.testing.expectEqual(intent_invalid, parseIntent(tc.args, &config, &writer));
         try std.testing.expect(std.mem.indexOf(u8, &buf, tc.message) != null);
+    }
+}
+
+test "parse recognizes --completions with every shell" {
+    for (completions.all) |shell| {
+        var buf: [128]u8 = undefined;
+        var writer = std.Io.Writer.fixed(&buf);
+        var config = testConfig();
+        const intent = parseIntent(
+            &.{ "zix", "--completions", completions.name(shell) },
+            &config,
+            &writer,
+        );
+        try std.testing.expectEqual(shell, intent.completions);
+    }
+}
+
+test "parse accepts --completions=shell" {
+    var buf: [128]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    var config = testConfig();
+    try std.testing.expectEqual(
+        completions.Shell.fish,
+        parseIntent(&.{ "zix", "--completions=fish" }, &config, &writer).completions,
+    );
+}
+
+test "parse rejects an incomplete or unknown --completions" {
+    const cases = [_][]const []const u8{
+        &.{ "zix", "--completions" },
+        &.{ "zix", "--completions=" },
+        &.{ "zix", "--completions", "powershell" },
+    };
+    for (cases) |args| {
+        var buf: [256]u8 = undefined;
+        var writer = std.Io.Writer.fixed(&buf);
+        var config = testConfig();
+        try std.testing.expectEqual(intent_invalid, parseIntent(args, &config, &writer));
+        try std.testing.expect(std.mem.indexOf(u8, &buf, "Error") != null);
     }
 }
 
@@ -608,7 +672,7 @@ test "parse folds --only step lists" {
     var writer = std.Io.Writer.fixed(&buf);
     var config = testConfig();
     try std.testing.expectEqual(
-        Intent.run,
+        intent_run,
         parseIntent(&.{ "zix", "--only", "pull, stage ,rebuild" }, &config, &writer),
     );
     const steps = config.only.?;
@@ -619,7 +683,7 @@ test "parse folds --only step lists" {
 
     var alias = testConfig();
     try std.testing.expectEqual(
-        Intent.run,
+        intent_run,
         parseIntent(&.{ "zix", "--only=update" }, &alias, &writer),
     );
     try std.testing.expect(alias.only.?.contains(.flake));
@@ -640,7 +704,7 @@ test "parse rejects an invalid --only list" {
         var buf: [512]u8 = undefined;
         var writer = std.Io.Writer.fixed(&buf);
         var config = testConfig();
-        try std.testing.expectEqual(Intent.invalid, parseIntent(tc.args, &config, &writer));
+        try std.testing.expectEqual(intent_invalid, parseIntent(tc.args, &config, &writer));
         try std.testing.expect(std.mem.indexOf(u8, &buf, tc.message) != null);
     }
 }
@@ -677,7 +741,7 @@ test "parse rejects invalid input and reports it" {
         var buf: [512]u8 = undefined;
         var writer = std.Io.Writer.fixed(&buf);
         var config = testConfig();
-        try std.testing.expectEqual(Intent.invalid, parseIntent(args, &config, &writer));
+        try std.testing.expectEqual(intent_invalid, parseIntent(args, &config, &writer));
         try std.testing.expect(std.mem.indexOf(u8, &buf, "Error") != null);
     }
 }
@@ -690,7 +754,31 @@ test "parse drops overlong error messages" {
     long_flag[0] = '-';
     @memset(long_flag[1..], 'x');
     const args = [_][]const u8{ "zix", &long_flag };
-    try std.testing.expectEqual(Intent.invalid, parseIntent(&args, &config, &writer));
+    try std.testing.expectEqual(intent_invalid, parseIntent(&args, &config, &writer));
+}
+
+test "run dispatches completions without running the workflow" {
+    var environ = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ.deinit();
+    var ebuf: [1024]u8 = undefined;
+    var ewriter = std.Io.Writer.fixed(&ebuf);
+    var deps = test_runner;
+    deps.environ = &environ;
+    deps.err_writer = &ewriter;
+
+    var memory: [16384]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&memory);
+    var static_allocator = StaticAllocator.init(fba.allocator());
+    var buf: [8192]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    try run(
+        std.testing.io,
+        &writer,
+        &.{ "zix", "--completions", "bash" },
+        deps,
+        &static_allocator,
+    );
+    try std.testing.expect(std.mem.indexOf(u8, &buf, "complete -F _zix zix") != null);
 }
 
 test "run dispatches help and version without running the workflow" {
