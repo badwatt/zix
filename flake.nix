@@ -42,6 +42,10 @@
           zigWrapperBins = with env.pkgs; [ ];
 
           zigWrapperLibs = with env.pkgs; [ ];
+
+          postInstall = ''
+            install -Dm644 ${./zix.1} "$out/share/man/man1/zix.1"
+          '';
         });
 
         apps.bundle = {

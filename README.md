@@ -109,9 +109,41 @@ Autodoc uses `///` (declarations) and `//!` (module-level) comments. No doc comm
  -d, --diff      : set diff to true (default is false)
  -y, --yes       : assume yes for all prompts (default is false)
      --dry-run   : print commands without executing them
+     --no-color  : disable colored output
+     --only      : run only these steps (pull,flake,stage,rebuild,cleanup,diff)
+     --completions : print shell completions (bash,zsh,fish)
  -h, --help      : Display this help message
  -v, --version   : Display the current version
 ```
+
+Long options also accept `--flag=value` (`--repo=/path`, `--only=diff`).
+
+### Step selection
+
+`--only` takes a comma-separated list of `pull`, `flake`, `stage`, `rebuild`,
+`cleanup`, `diff` (`update` is an alias for `flake`):
+
+```sh
+zix --only diff                 # only show the closure diff
+zix -u --only flake             # just update flake inputs
+zix --only stage,rebuild        # no pull, no cleanup
+```
+
+The list wins over `--update`/`--diff`, and a run that skips `rebuild` does not
+need a detected hostname.
+
+### Shell completions and man page
+
+```sh
+zix --completions bash | sudo tee /etc/bash_completion.d/zix
+zix --completions zsh > "${fpath[1]}/_zix"
+zix --completions fish > ~/.config/fish/completions/zix.fish
+```
+
+The scripts are static (no generator or build step) and cover every flag,
+including the step names for `--only`. `zix.1` documents every option, the
+step selection and the exit codes; the Nix package installs it under
+`share/man/man1`, and from a source checkout `man ./zix.1` works too.
 
 Exit codes: `0` success, `1` runtime failure, `2` invalid arguments or config,
 `141` when stdout is closed early (SIGPIPE convention, e.g. `zix | head`).
@@ -180,10 +212,11 @@ build/coverage.zig   kcov JSON parser (Zig)
 build/serve.zig      Static HTTP server for autodoc (Zig)
 build/tests.zig      Test root for the build/ helpers
 src/main.zig         Entry point, port wiring, exit codes
-src/app/init.zig     Arg parsing (Intent), hostname, dispatch
-src/app/cli.zig      Workflow pipeline, Deps, error/exit mapping
-src/app/config.zig   Config struct: defaults, validation, ~ expansion
-src/app/hostname.zig Hostname resolution chain
+src/app/init.zig       Arg parsing (Intent), hostname, dispatch
+src/app/cli.zig        Workflow pipeline, Deps, error/exit mapping
+src/app/config.zig     Config struct: defaults, validation, ~ expansion
+src/app/hostname.zig   Hostname resolution chain
+src/app/completions.zig Static completion scripts (bash, zsh, fish)
 src/core/commands.zig argv builders for git and nix
 src/core/io.zig      Formatted output + ANSI style constants
 src/core/process.zig CommandRunner port + std.process implementation
@@ -191,6 +224,7 @@ src/core/dry_run.zig --dry-run CommandRunner
 src/core/ui.zig      UserIo port + terminal implementation
 src/core/static_allocator.zig Two-phase allocator (init → static → deinit)
 tests/integration.zig End-to-end tests for the compiled binary
+zix.1                 Man page (installed by the Nix package)
 ```
 
 ## License

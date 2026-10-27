@@ -1,0 +1,124 @@
+.TH ZIX 1 "" "zix 0.14.0" "User Commands"
+.SH NAME
+zix \- pull, stage, rebuild and clean up a NixOS system
+.SH SYNOPSIS
+.B zix
+[\fIOPTIONS\fR]
+.br
+.B zix
+\fBhelp\fR | \fBversion\fR
+.br
+.B zix
+\fB\-\-completions\fR \fISHELL\fR
+.SH DESCRIPTION
+.B zix
+runs the NixOS update cycle against a dotfiles repository: it pulls the
+latest changes, optionally updates the flake inputs, stages the changes,
+rebuilds the system with \fBnixos\-rebuild switch\fR, deletes old generations
+and optionally shows the closure diff.
+.PP
+Every external command runs as an argv list (no shell), and each step fails
+fast: a failed pull, flake update, stage or rebuild aborts before the next
+step.
+.SH OPTIONS
+.TP
+.BR \-r ", " \-\-repo " " \fIPATH\fR
+Path to the dotfiles repository. Default: \fB~/.dotfiles\fR. A leading
+\fB~\fR is expanded from \fB$HOME\fR.
+.TP
+.BR \-n ", " \-\-hostname " " \fINAME\fR
+Hostname used for the flake attribute (\fIPATH\fR#\fINAME\fR). Default:
+detected from \fB/proc/sys/kernel/hostname\fR, \fB$HOSTNAME\fR or
+\fBgethostname\fR. The rebuild aborts when no hostname can be detected; a run
+that skips the rebuild (for example \fB\-\-only diff\fR) does not need it.
+.TP
+.BR \-k ", " \-\-keep " " \fIN\fR
+Generations to keep during cleanup (1\-255). Default: \fB10\fR.
+.TP
+.BR \-j ", " \-\-jobs " " \fIN\fR
+Cap \fBnix\fR \fB\-\-max\-jobs\fR for the rebuild (1\-65535).
+.TP
+.BR \-c ", " \-\-cores " " \fIN\fR
+Cap \fBnix\fR \fB\-\-cores\fR for the rebuild (1\-65535).
+.TP
+.BR \-u ", " \-\-update
+Run \fBnix flake update\fR before staging.
+.TP
+.BR \-d ", " \-\-diff
+Show the closure diff between the previous and current generation.
+.TP
+.BR \-y ", " \-\-yes
+Assume yes for every prompt.
+.TP
+.BI \-\-only " " \fISTEPS\fR
+Run only the listed comma-separated steps: \fBpull\fR, \fBflake\fR,
+\fBstage\fR, \fBrebuild\fR, \fBcleanup\fR, \fBdiff\fR. \fBupdate\fR is accepted
+as an alias for \fBflake\fR. The list wins over \fB\-\-update\fR and
+\fB\-\-diff\fR.
+.TP
+.B \-\-dry\-run
+Print each command instead of executing it. The read-only capability probe of
+\fBnixos\-rebuild\fR still runs, so the preview shows the flavour actually
+installed.
+.TP
+.B \-\-no\-color
+Disable ANSI colours. Colours are also disabled when \fBNO_COLOR\fR is set or
+the stream is not a terminal.
+.TP
+.BI \-\-completions " " \fISHELL\fR
+Print the completion script for \fISHELL\fR (\fBbash\fR, \fBzsh\fR or
+\fBfish\fR) to standard output and exit.
+.TP
+.BR \-h ", " \-\-help
+Print the help banner.
+.TP
+.BR \-v ", " \-\-version
+Print the version.
+.PP
+Long options also accept \fB\-\-flag=value\fR (\fB\-\-repo=/path\fR,
+\fB\-\-only=diff\fR).
+.SH STEP SELECTION
+Without \fB\-\-only\fR the pipeline is: \fBpull\fR, \fBflake\fR (only with
+\fB\-\-update\fR), \fBstage\fR, \fBrebuild\fR, \fBcleanup\fR and \fBdiff\fR
+(only with \fB\-\-diff\fR). Declining the staging prompt aborts the run. A
+closed stdin is never treated as a confirmation.
+.SH EXIT STATUS
+.TP
+.B 0
+Success, or the user aborted at a prompt.
+.TP
+.B 1
+A workflow step failed (pull, stage, rebuild, cleanup, diff), the hostname
+could not be detected, or the repository is not a git work tree.
+.TP
+.B 2
+Invalid arguments or configuration.
+.TP
+.B 141
+Standard output was closed early (128 + SIGPIPE).
+.PP
+A child process killed by signal \fIN\fR yields \fB128\fR + \fIN\fR.
+.SH ENVIRONMENT
+.TP
+.I NO_COLOR
+When non-empty, disables ANSI colours.
+.TP
+.I TERM
+\fBdumb\fR disables ANSI colours.
+.TP
+.I HOME
+Used to expand a leading \fB~\fR in \fB\-\-repo\fR.
+.TP
+.I HOSTNAME
+Fallback hostname source.
+.SH FILES
+.TP
+.I ~/.dotfiles
+Default repository.
+.TP
+.I /nix/var/nix/profiles/system
+System profile used for generation pruning and the closure diff.
+.SH SEE ALSO
+.BR nixos\-rebuild (8),
+.BR nix (1),
+.BR git (1)
