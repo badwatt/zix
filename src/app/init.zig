@@ -11,6 +11,9 @@ const cmd = @import("../core/commands.zig");
 const dry_run = @import("../core/dry_run.zig");
 const hostname_mod = @import("./hostname.zig");
 const Config = @import("config.zig").Config;
+const PipelineStep = @import("config.zig").Step;
+const pipelineStepFromName = @import("config.zig").stepFromName;
+const step_names = @import("config.zig").step_names;
 const StaticAllocator = @import("../core/static_allocator.zig");
 const VERSION = @import("zon").version;
 
@@ -52,8 +55,11 @@ pub fn run(
     }
 
     // Abort before any side effect (pull, flake update, staging) when the
-    // hostname could not be resolved or was forced to the sentinel.
-    if (std.mem.eql(u8, config.hostname, "unknown")) return cli.Error.HostnameUnknown;
+    // rebuild is selected and the hostname could not be resolved. A run that
+    // skips the rebuild (e.g. `--only diff`) does not need it.
+    if (config.runs(.rebuild) and std.mem.eql(u8, config.hostname, "unknown")) {
+        return cli.Error.HostnameUnknown;
+    }
 
     // `--dry-run` swaps the command runner for one that only prints.
     var dry = dry_run.DryRun{ .writer = writer };
@@ -165,6 +171,13 @@ fn parseLong(
         if (rejectInline(name, inline_value, writer)) return .{ .terminal = .invalid };
         return .{ .consumed = 0 };
     }
+    if (std.mem.eql(u8, name, "--only")) {
+        const value = longValue(name, inline_value, args, i, writer) orelse
+            return .{ .terminal = .invalid };
+        config.only = parseSteps(value.text, writer) orelse
+            return .{ .terminal = .invalid };
+        return .{ .consumed = value.consumed };
+    }
     if (std.mem.eql(u8, name, "--repo") or
         std.mem.eql(u8, name, "--hostname") or
         std.mem.eql(u8, name, "--keep") or
@@ -213,6 +226,26 @@ fn longValue(
     }
     const value = takeValue(args, i, name, writer) orelse return null;
     return .{ .text = value, .consumed = 1 };
+}
+
+/// Parses a comma-separated `--only` list, or reports an unknown step.
+fn parseSteps(value: []const u8, writer: *std.Io.Writer) ?std.EnumSet(PipelineStep) {
+    var steps: std.EnumSet(PipelineStep) = .empty;
+    var names = std.mem.splitScalar(u8, value, ',');
+    while (names.next()) |raw| {
+        const name = std.mem.trim(u8, raw, " \t");
+        if (name.len == 0) continue;
+        const step = pipelineStepFromName(name) orelse {
+            printParseError(writer, "Unknown step \"{s}\" (valid: {s})", .{ name, step_names });
+            return null;
+        };
+        steps.insert(step);
+    }
+    if (steps.count() == 0) {
+        printParseError(writer, "\"--only\" flag requires at least one step", .{});
+        return null;
+    }
+    return steps;
 }
 
 /// Maps a long value-flag name to its `ValueKey`.
@@ -570,6 +603,48 @@ test "parse reports the accepted numeric range" {
     }
 }
 
+test "parse folds --only step lists" {
+    var buf: [512]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    var config = testConfig();
+    try std.testing.expectEqual(
+        Intent.run,
+        parseIntent(&.{ "zix", "--only", "pull, stage ,rebuild" }, &config, &writer),
+    );
+    const steps = config.only.?;
+    try std.testing.expect(steps.contains(.pull));
+    try std.testing.expect(steps.contains(.stage));
+    try std.testing.expect(steps.contains(.rebuild));
+    try std.testing.expect(!steps.contains(.diff));
+
+    var alias = testConfig();
+    try std.testing.expectEqual(
+        Intent.run,
+        parseIntent(&.{ "zix", "--only=update" }, &alias, &writer),
+    );
+    try std.testing.expect(alias.only.?.contains(.flake));
+}
+
+test "parse rejects an invalid --only list" {
+    const Case = struct {
+        args: []const []const u8,
+        message: []const u8,
+    };
+    const cases = &[_]Case{
+        .{ .args = &.{ "zix", "--only" }, .message = "requires an argument" },
+        .{ .args = &.{ "zix", "--only=" }, .message = "requires an argument" },
+        .{ .args = &.{ "zix", "--only", "" }, .message = "requires at least one step" },
+        .{ .args = &.{ "zix", "--only", "pull,nope" }, .message = "Unknown step \"nope\"" },
+    };
+    for (cases) |tc| {
+        var buf: [512]u8 = undefined;
+        var writer = std.Io.Writer.fixed(&buf);
+        var config = testConfig();
+        try std.testing.expectEqual(Intent.invalid, parseIntent(tc.args, &config, &writer));
+        try std.testing.expect(std.mem.indexOf(u8, &buf, tc.message) != null);
+    }
+}
+
 test "parse rejects invalid input and reports it" {
     const cases = &[_][]const []const u8{
         &.{ "zix", "unknown" },
@@ -738,6 +813,30 @@ test "run with dry-run prints commands" {
     var writer = std.Io.Writer.fixed(&buf);
     try run(std.testing.io, &writer, &.{ "zix", "--dry-run", "-y", "-n", "host" }, deps, &static_allocator);
     try std.testing.expect(std.mem.indexOf(u8, &buf, "$ ") != null);
+}
+
+test "run with --only diff does not require a hostname" {
+    var environ = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ.deinit();
+    var ebuf: [1024]u8 = undefined;
+    var ewriter = std.Io.Writer.fixed(&ebuf);
+    var deps = test_runner;
+    deps.environ = &environ;
+    deps.err_writer = &ewriter;
+
+    var memory: [16384]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&memory);
+    var static_allocator = StaticAllocator.init(fba.allocator());
+    var buf: [4096]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    try run(
+        std.testing.io,
+        &writer,
+        &.{ "zix", "--only", "diff", "--dry-run", "-y", "-n", "unknown" },
+        deps,
+        &static_allocator,
+    );
+    try std.testing.expect(std.mem.indexOf(u8, &buf, "diff-closures") != null);
 }
 
 test "run rejects unknown hostname before any command runs" {

@@ -85,6 +85,32 @@ test "dry run prints commands without executing" {
     try std.testing.expect(std.mem.indexOf(u8, result.stdout, "nixos-rebuild") != null);
 }
 
+test "only flag runs the selected steps" {
+    const result = try run(&.{
+        "--dry-run", "-y", "-n", "testhost", "-r", "/tmp", "--only", "diff",
+    });
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(i32, 0), result.code());
+    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "diff-closures") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "Git Pull") == null);
+}
+
+test "unknown only step exits with code 2" {
+    const result = try run(&.{ "--only", "nope" });
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(i32, 2), result.code());
+    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "Unknown step") != null);
+}
+
+test "only diff works without a detected hostname" {
+    const result = try run(&.{
+        "--dry-run", "-y", "-n", "unknown", "-r", "/tmp", "--only", "diff",
+    });
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(i32, 0), result.code());
+    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "diff-closures") != null);
+}
+
 test "jobs and cores flags flow into the rebuild command" {
     const result = try run(&.{
         "--dry-run", "-y", "-n", "testhost", "-r", "/tmp", "-j", "4", "-c", "6",

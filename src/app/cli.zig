@@ -10,6 +10,7 @@ const cmd = @import("../core/commands.zig");
 const process = @import("../core/process.zig");
 const ui_mod = @import("../core/ui.zig");
 const Config = @import("config.zig").Config;
+const Step = @import("config.zig").Step;
 
 /// Errors the workflow surfaces so `main` can pick an exit code.
 pub const Error = error{
@@ -108,15 +109,15 @@ pub fn execute(
         return;
     }
 
-    try pull(io, writer, commands, deps);
+    if (config.runs(.pull)) try pull(io, writer, commands, deps);
 
-    if (config.update) try flakeUpdate(io, writer, commands, deps);
+    if (config.runs(.flake)) try flakeUpdate(io, writer, commands, deps);
 
-    try stage(io, writer, config, commands, deps);
-    try rebuild(io, writer, commands, deps);
-    try cleanup(io, commands, deps);
+    if (config.runs(.stage)) try stage(io, writer, config, commands, deps);
+    if (config.runs(.rebuild)) try rebuild(io, writer, commands, deps);
+    if (config.runs(.cleanup)) try cleanup(io, commands, deps);
 
-    if (config.diff) try showDiff(io, writer, commands, deps);
+    if (config.runs(.diff)) try showDiff(io, writer, commands, deps);
 }
 
 /// Verifies the repo is a git work tree, then pulls.
@@ -731,6 +732,44 @@ test "execute fails when diff-closures fails" {
         execute(std.testing.io, &writer, config, commands, testDeps(arena.allocator(), &environ)),
     );
     try std.testing.expectEqualStrings("Failed to compute closure diff", last_error);
+}
+
+test "execute runs only the selected steps" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var environ = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ.deinit();
+    resetMocks();
+    // `pull` would fail if it ran, so success proves --only skipped it.
+    fail_needle = "pull";
+    capture_output = "Version 2\nchanged\n";
+
+    var config = testConfig("host");
+    config.yes = true;
+    config.only = std.EnumSet(Step).initOne(.diff);
+    const commands = try buildCommands(config, .ng, arena.allocator());
+    var buf: [1024]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    try execute(std.testing.io, &writer, config, commands, testDeps(arena.allocator(), &environ));
+    try std.testing.expectEqualStrings("Version 2\nchanged\n", last_output);
+}
+
+test "execute skips the diff when it is not selected" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var environ = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ.deinit();
+    resetMocks();
+    // A failing capture would abort the run if the diff step ran.
+    capture_code = 7;
+
+    var config = testConfig("host");
+    config.yes = true;
+    config.only = std.EnumSet(Step).initOne(.pull);
+    const commands = try buildCommands(config, .ng, arena.allocator());
+    var buf: [512]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    try execute(std.testing.io, &writer, config, commands, testDeps(arena.allocator(), &environ));
 }
 
 test "errorMessage and exitCode cover every variant" {

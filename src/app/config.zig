@@ -10,6 +10,25 @@ pub const DEFAULT_REPO = "~/.dotfiles";
 /// Default number of generations to keep when pruning.
 pub const DEFAULT_KEEP = 10;
 
+/// One step of the update pipeline, in execution order. `--only` selects an
+/// explicit subset; `Config.runs` decides which steps run.
+pub const Step = enum { pull, flake, stage, rebuild, cleanup, diff };
+
+/// Comma-separated step names, for error messages.
+pub const step_names = "pull,flake,stage,rebuild,cleanup,diff";
+
+/// CLI name of a step (`--only <name>`).
+pub fn stepName(step: Step) []const u8 {
+    return @tagName(step);
+}
+
+/// Looks a step up by its CLI name. `update` is an alias for `flake`, matching
+/// the `--update` flag people already know.
+pub fn stepFromName(name: []const u8) ?Step {
+    if (std.mem.eql(u8, name, "update")) return .flake;
+    return std.meta.stringToEnum(Step, name);
+}
+
 /// CLI configuration struct. All fields have sensible defaults.
 pub const Config = struct {
     /// Path to the dotfiles git repository.
@@ -30,6 +49,8 @@ pub const Config = struct {
     yes: bool,
     /// Print commands instead of executing them.
     dry_run: bool,
+    /// Explicit step selection (`--only`), or null for the default pipeline.
+    only: ?std.EnumSet(Step) = null,
 
     /// Returns a Config with the given hostname and default repo/keep/flags.
     pub fn defaults(hostname: []const u8) Config {
@@ -58,6 +79,18 @@ pub const Config = struct {
             if (cores == 0) return "cores must be > 0";
         }
         return null;
+    }
+
+    /// Whether `step` belongs to this run. `--only` wins when given; otherwise
+    /// pull/stage/rebuild/cleanup always run and the flake update / closure
+    /// diff follow their own flags.
+    pub fn runs(self: Config, step: Step) bool {
+        if (self.only) |steps| return steps.contains(step);
+        return switch (step) {
+            .flake => self.update,
+            .diff => self.diff,
+            .pull, .stage, .rebuild, .cleanup => true,
+        };
     }
 
     /// Expands a leading `~` (alone or followed by `/`) to `home`. Returns
@@ -119,6 +152,41 @@ test "validate rejects zero keep" {
     var config = Config.defaults("nixos");
     config.keep = 0;
     try std.testing.expect(config.validate() != null);
+}
+
+test "runs follows the default pipeline" {
+    var config = Config.defaults("nixos");
+    try std.testing.expect(config.runs(.pull));
+    try std.testing.expect(config.runs(.stage));
+    try std.testing.expect(config.runs(.rebuild));
+    try std.testing.expect(config.runs(.cleanup));
+    try std.testing.expect(!config.runs(.flake));
+    try std.testing.expect(!config.runs(.diff));
+
+    config.update = true;
+    config.diff = true;
+    try std.testing.expect(config.runs(.flake));
+    try std.testing.expect(config.runs(.diff));
+}
+
+test "runs follows an explicit --only set" {
+    var config = Config.defaults("nixos");
+    config.update = true;
+    config.diff = true;
+    config.only = std.EnumSet(Step).initOne(.diff);
+    try std.testing.expect(config.runs(.diff));
+    // An explicit list wins over --update/--diff.
+    try std.testing.expect(!config.runs(.flake));
+    try std.testing.expect(!config.runs(.pull));
+}
+
+test "step names round-trip and update aliases flake" {
+    for ([_]Step{ .pull, .flake, .stage, .rebuild, .cleanup, .diff }) |step| {
+        try std.testing.expectEqual(step, stepFromName(stepName(step)).?);
+    }
+    try std.testing.expectEqual(Step.flake, stepFromName("update").?);
+    try std.testing.expectEqual(@as(?Step, null), stepFromName("bogus"));
+    try std.testing.expectEqualStrings("pull,flake,stage,rebuild,cleanup,diff", step_names);
 }
 
 test "expandTilde expands home" {
