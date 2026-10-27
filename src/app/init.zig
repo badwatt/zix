@@ -120,7 +120,7 @@ fn parseFlags(args: []const []const u8, config: *Config, writer: *std.Io.Writer)
     return .run;
 }
 
-/// Parses a `--long` flag at `args[i]`.
+/// Parses a `--long` flag (or `--long=value`) at `args[i]`.
 fn parseLong(
     arg: []const u8,
     args: []const []const u8,
@@ -128,35 +128,87 @@ fn parseLong(
     config: *Config,
     writer: *std.Io.Writer,
 ) Step {
-    if (std.mem.eql(u8, arg, "--help")) return .{ .terminal = .help };
-    if (std.mem.eql(u8, arg, "--version")) return .{ .terminal = .version };
-    if (std.mem.eql(u8, arg, "--update")) {
+    // GNU-style `--flag=value`: the value travels in the same argv entry.
+    const eq = std.mem.indexOfScalar(u8, arg, '=');
+    const name = if (eq) |index| arg[0..index] else arg;
+    const inline_value: ?[]const u8 = if (eq) |index| arg[index + 1 ..] else null;
+
+    if (std.mem.eql(u8, name, "--help")) {
+        if (rejectInline(name, inline_value, writer)) return .{ .terminal = .invalid };
+        return .{ .terminal = .help };
+    }
+    if (std.mem.eql(u8, name, "--version")) {
+        if (rejectInline(name, inline_value, writer)) return .{ .terminal = .invalid };
+        return .{ .terminal = .version };
+    }
+    if (std.mem.eql(u8, name, "--update")) {
+        if (rejectInline(name, inline_value, writer)) return .{ .terminal = .invalid };
         config.update = true;
         return .{ .consumed = 0 };
     }
-    if (std.mem.eql(u8, arg, "--diff")) {
+    if (std.mem.eql(u8, name, "--diff")) {
+        if (rejectInline(name, inline_value, writer)) return .{ .terminal = .invalid };
         config.diff = true;
         return .{ .consumed = 0 };
     }
-    if (std.mem.eql(u8, arg, "--yes")) {
+    if (std.mem.eql(u8, name, "--yes")) {
+        if (rejectInline(name, inline_value, writer)) return .{ .terminal = .invalid };
         config.yes = true;
         return .{ .consumed = 0 };
     }
-    if (std.mem.eql(u8, arg, "--dry-run")) {
+    if (std.mem.eql(u8, name, "--dry-run")) {
+        if (rejectInline(name, inline_value, writer)) return .{ .terminal = .invalid };
         config.dry_run = true;
         return .{ .consumed = 0 };
     }
-    if (std.mem.eql(u8, arg, "--repo") or
-        std.mem.eql(u8, arg, "--hostname") or
-        std.mem.eql(u8, arg, "--keep") or
-        std.mem.eql(u8, arg, "--jobs") or
-        std.mem.eql(u8, arg, "--cores"))
+    if (std.mem.eql(u8, name, "--repo") or
+        std.mem.eql(u8, name, "--hostname") or
+        std.mem.eql(u8, name, "--keep") or
+        std.mem.eql(u8, name, "--jobs") or
+        std.mem.eql(u8, name, "--cores"))
     {
-        const value = takeValue(args, i, arg, writer) orelse return .{ .terminal = .invalid };
-        return setValue(longKey(arg), value, arg, config, writer);
+        const value = longValue(name, inline_value, args, i, writer) orelse
+            return .{ .terminal = .invalid };
+        if (!setValue(longKey(name), value.text, name, config, writer)) {
+            return .{ .terminal = .invalid };
+        }
+        return .{ .consumed = value.consumed };
     }
-    printParseError(writer, "Unknown flag \"{s}\"", .{arg});
+    printParseError(writer, "Unknown flag \"{s}\"", .{name});
     return .{ .terminal = .invalid };
+}
+
+/// Reports `--flag=value` for a flag that takes no value.
+fn rejectInline(name: []const u8, value: ?[]const u8, writer: *std.Io.Writer) bool {
+    if (value == null) return false;
+    printParseError(writer, "\"{s}\" flag does not take a value", .{name});
+    return true;
+}
+
+/// A long flag's value and how many extra argv entries it consumed.
+const FlagValue = struct {
+    text: []const u8,
+    consumed: usize,
+};
+
+/// Resolves a long flag's value. `--flag=value` carries it inline; plain
+/// `--flag value` consumes the next argv entry.
+fn longValue(
+    name: []const u8,
+    inline_value: ?[]const u8,
+    args: []const []const u8,
+    i: usize,
+    writer: *std.Io.Writer,
+) ?FlagValue {
+    if (inline_value) |value| {
+        if (value.len == 0) {
+            printParseError(writer, "\"{s}\" flag requires an argument", .{name});
+            return null;
+        }
+        return .{ .text = value, .consumed = 0 };
+    }
+    const value = takeValue(args, i, name, writer) orelse return null;
+    return .{ .text = value, .consumed = 1 };
 }
 
 /// Maps a long value-flag name to its `ValueKey`.
@@ -194,7 +246,10 @@ fn parseShort(
                     return .{ .terminal = .invalid };
                 }
                 const value = takeValue(args, i, label, writer) orelse return .{ .terminal = .invalid };
-                return setValue(shortKey(flag), value, label, config, writer);
+                if (!setValue(shortKey(flag), value, label, config, writer)) {
+                    return .{ .terminal = .invalid };
+                }
+                return .{ .consumed = 1 };
             },
             else => {
                 printParseError(writer, "Unknown flag \"-{c}\"", .{flag});
@@ -234,25 +289,23 @@ fn takeValue(
     return next;
 }
 
-/// Assigns `value` to the field selected by `key`.
+/// Assigns `value` to the field selected by `key`. Returns false when the
+/// value was rejected (the error is already printed).
 fn setValue(
     key: ValueKey,
     value: []const u8,
     label: []const u8,
     config: *Config,
     writer: *std.Io.Writer,
-) Step {
+) bool {
     switch (key) {
         .repo => config.repo = value,
         .hostname => config.hostname = value,
-        .keep => config.keep = parseKeep(value, label, writer) orelse
-            return .{ .terminal = .invalid },
-        .jobs => config.jobs = parseKeep(value, label, writer) orelse
-            return .{ .terminal = .invalid },
-        .cores => config.cores = parseKeep(value, label, writer) orelse
-            return .{ .terminal = .invalid },
+        .keep => config.keep = parseKeep(value, label, writer) orelse return false,
+        .jobs => config.jobs = parseKeep(value, label, writer) orelse return false,
+        .cores => config.cores = parseKeep(value, label, writer) orelse return false,
     }
-    return .{ .consumed = 1 };
+    return true;
 }
 
 /// Parses a numeric `--keep` value (>= 1), or reports an error.
@@ -401,6 +454,34 @@ test "parse accepts a boolean flag before a value flag in a cluster" {
     try std.testing.expectEqualStrings("/r", config.repo);
 }
 
+test "parse accepts inline long values" {
+    var buf: [512]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    var config = testConfig();
+    try std.testing.expectEqual(
+        Intent.run,
+        parseIntent(&.{
+            "zix", "--repo=/r", "--hostname=h", "--keep=5", "--jobs=4", "--cores=2",
+        }, &config, &writer),
+    );
+    try std.testing.expectEqualStrings("/r", config.repo);
+    try std.testing.expectEqualStrings("h", config.hostname);
+    try std.testing.expectEqual(@as(u8, 5), config.keep);
+    try std.testing.expectEqual(@as(?u8, 4), config.jobs);
+    try std.testing.expectEqual(@as(?u8, 2), config.cores);
+}
+
+test "parse accepts an inline value that starts with a dash" {
+    var buf: [512]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    var config = testConfig();
+    try std.testing.expectEqual(
+        Intent.run,
+        parseIntent(&.{ "zix", "--repo=-weird" }, &config, &writer),
+    );
+    try std.testing.expectEqualStrings("-weird", config.repo);
+}
+
 test "parse folds the jobs flag" {
     var buf: [256]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buf);
@@ -455,6 +536,11 @@ test "parse rejects invalid input and reports it" {
         &.{ "zix", "-ry", "/repo" },
         &.{ "zix", "--repo", "--hostname", "h" },
         &.{ "zix", "-n", "-r" },
+        &.{ "zix", "--repo=" },
+        &.{ "zix", "--keep=0" },
+        &.{ "zix", "--yes=1" },
+        &.{ "zix", "--help=1" },
+        &.{ "zix", "--nope=1" },
     };
     for (cases) |args| {
         var buf: [512]u8 = undefined;
