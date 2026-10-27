@@ -156,8 +156,14 @@ jobs:
         with:
           path: artifacts
           pattern: zix-*
+      - name: Generate checksums
+        run: |
+          cd zig-out/bin
+          sha256sum zix-* > SHA256SUMS
       - uses: https://github.com/softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.tag.outputs.version }}
-          files: zig-out/bin/zix-*
+          files: |
+            zig-out/bin/zix-*
+            zig-out/bin/SHA256SUMS
           body: ${{ steps.build_changelog.outputs.changelog }}

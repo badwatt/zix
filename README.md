@@ -54,6 +54,15 @@ Add to flake:
 }
 ```
 
+## Releases
+
+Every `build.zig.zon` version bump on `main` is tagged and published with
+`x86_64-linux` and `aarch64-linux` binaries plus a `SHA256SUMS` file:
+
+```sh
+sha256sum -c SHA256SUMS --ignore-missing
+```
+
 ## Build Commands
 
 All tasks via `zig build`:
