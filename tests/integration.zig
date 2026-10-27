@@ -93,6 +93,8 @@ test "only flag runs the selected steps" {
     try std.testing.expectEqual(@as(i32, 0), result.code());
     try std.testing.expect(std.mem.indexOf(u8, result.stdout, "diff-closures") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.stdout, "Git Pull") == null);
+    // No rebuild step means no `nixos-rebuild` capability probe.
+    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "nixos-rebuild") == null);
 }
 
 test "unknown only step exits with code 2" {

@@ -73,7 +73,12 @@ pub fn run(
     var dry = dry_run.DryRun{ .writer = writer };
     if (config.dry_run) deps_local.runner = dry.runner();
 
-    const flavor = cli.detectFlavor(cli_io, deps_local);
+    // Probing the installed `nixos-rebuild` is only useful when the rebuild
+    // step runs; `--only diff` must not invoke it at all.
+    const flavor = if (config.runs(.rebuild))
+        cli.detectFlavor(cli_io, deps_local)
+    else
+        cmd.RebuildFlavor.classic;
     const commands = try cli.buildCommands(config, flavor, allocator);
 
     static_allocator.transition_from_init_to_static();
@@ -925,6 +930,8 @@ test "run with --only diff does not require a hostname" {
         &static_allocator,
     );
     try std.testing.expect(std.mem.indexOf(u8, &buf, "diff-closures") != null);
+    // The rebuild was not selected, so `nixos-rebuild` is never probed.
+    try std.testing.expect(std.mem.indexOf(u8, &buf, "nixos-rebuild") == null);
 }
 
 test "run rejects unknown hostname before any command runs" {
