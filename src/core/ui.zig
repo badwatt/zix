@@ -95,20 +95,20 @@ pub fn printHelp(writer: *std.Io.Writer) !void {
         \\ *****************************************************
         \\  ZIX - A simple CLI tool to update your nixos system
         \\ *****************************************************
-        \\ -r, --repo      : set repo path (default is $HOME/.dotfiles)
-        \\ -n, --hostname  : set hostname (default is OS hostname)
-        \\ -k, --keep      : set generations to keep (default is 10)
-        \\ -j, --jobs      : set max parallel builds (default is nix config)
-        \\ -c, --cores     : set max parallel jobs per build (default is nix config)
-        \\ -u, --update    : set update to true (default is false)
-        \\ -d, --diff      : set diff to true (default is false)
-        \\ -y, --yes       : assume yes for all prompts (default is false)
-        \\     --dry-run   : print commands without executing them
-        \\     --no-color  : disable colored output
-        \\     --only      : run only these steps (pull,flake,stage,rebuild,cleanup,diff)
+        \\ -r, --repo        : set repo path (default is $HOME/.dotfiles)
+        \\ -n, --hostname    : set hostname (default is OS hostname)
+        \\ -k, --keep        : set generations to keep (default is 10)
+        \\ -j, --jobs        : set max parallel builds (default is nix config)
+        \\ -c, --cores       : set max parallel jobs per build (default is nix config)
+        \\ -u, --update      : set update to true (default is false)
+        \\ -d, --diff        : set diff to true (default is false)
+        \\ -y, --yes         : assume yes for all prompts (default is false)
+        \\     --dry-run     : print commands without executing them
+        \\     --no-color    : disable colored output
+        \\     --only        : run only these steps (pull,flake,stage,rebuild,cleanup,diff)
         \\     --completions : print shell completions (bash,zsh,fish)
-        \\ -h, --help      : Display this help message
-        \\ -v, --version   : Display the current version
+        \\ -h, --help        : Display this help message
+        \\ -v, --version     : Display the current version
         \\
         \\
     , .{});
