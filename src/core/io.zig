@@ -50,6 +50,15 @@ fn colorAllowedByEnv(environ: *std.process.Environ.Map) bool {
     return true;
 }
 
+/// True when `--no-color` appears anywhere in `args`. Scanned before parsing
+/// so the flag also silences diagnostics from an argument error.
+pub fn noColorRequested(args: []const []const u8) bool {
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "--no-color")) return true;
+    }
+    return false;
+}
+
 /// ANSI foreground color escape sequences and reset codes.
 pub const Red = "\x1b[31m";
 pub const Green = "\x1b[32m";
@@ -92,6 +101,12 @@ test "colorSupported honors NO_COLOR and TERM" {
 
     // The terminal probe depends on the real stdout; just exercise it.
     _ = colorSupported(std.testing.io, &environ);
+}
+
+test "noColorRequested scans every argument" {
+    try std.testing.expect(!noColorRequested(&.{"zix"}));
+    try std.testing.expect(noColorRequested(&.{ "zix", "-y", "--no-color" }));
+    try std.testing.expect(!noColorRequested(&.{ "zix", "--no-color=1" }));
 }
 
 test "style constants are non-empty" {

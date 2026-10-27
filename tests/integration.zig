@@ -95,6 +95,14 @@ test "jobs and cores flags flow into the rebuild command" {
     try std.testing.expect(std.mem.indexOf(u8, result.stdout, "--cores 6") != null);
 }
 
+test "no-color flag is accepted and keeps help plain" {
+    const result = try run(&.{ "--no-color", "-h" });
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(i32, 0), result.code());
+    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "ZIX") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "\x1b[") == null);
+}
+
 test "unknown hostname aborts before rebuild" {
     const result = try run(&.{ "--dry-run", "-y", "-n", "unknown", "-r", "/tmp" });
     defer result.deinit(std.testing.allocator);

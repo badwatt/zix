@@ -104,6 +104,7 @@ pub fn printHelp(writer: *std.Io.Writer) !void {
         \\ -d, --diff      : set diff to true (default is false)
         \\ -y, --yes       : assume yes for all prompts (default is false)
         \\     --dry-run   : print commands without executing them
+        \\     --no-color  : disable colored output
         \\ -h, --help      : Display this help message
         \\ -v, --version   : Display the current version
         \\

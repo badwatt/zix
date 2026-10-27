@@ -161,6 +161,10 @@ fn parseLong(
         config.dry_run = true;
         return .{ .consumed = 0 };
     }
+    if (std.mem.eql(u8, name, "--no-color")) {
+        if (rejectInline(name, inline_value, writer)) return .{ .terminal = .invalid };
+        return .{ .consumed = 0 };
+    }
     if (std.mem.eql(u8, name, "--repo") or
         std.mem.eql(u8, name, "--hostname") or
         std.mem.eql(u8, name, "--keep") or
@@ -408,7 +412,7 @@ test "parse folds boolean flags" {
     var config = testConfig();
     try std.testing.expectEqual(
         Intent.run,
-        parseIntent(&.{ "zix", "-duy", "--update", "--dry-run", "--diff", "--yes" }, &config, &writer),
+        parseIntent(&.{ "zix", "-duy", "--update", "--dry-run", "--diff", "--yes", "--no-color" }, &config, &writer),
     );
     try std.testing.expect(config.update);
     try std.testing.expect(config.diff);
@@ -541,6 +545,7 @@ test "parse rejects invalid input and reports it" {
         &.{ "zix", "--yes=1" },
         &.{ "zix", "--help=1" },
         &.{ "zix", "--nope=1" },
+        &.{ "zix", "--no-color=1" },
     };
     for (cases) |args| {
         var buf: [512]u8 = undefined;
