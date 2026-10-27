@@ -154,6 +154,12 @@ including the step names for `--only`. `zix.1` documents every option, the
 step selection and the exit codes; the Nix package installs it under
 `share/man/man1`, and from a source checkout `man ./zix.1` works too.
 
+The Nix package also generates the three scripts at build time and installs
+them where each shell looks by default: `share/zsh/site-functions/_zix`,
+`share/fish/vendor_completions.d/zix.fish` and
+`share/bash-completion/completions/zix`. A profile install (or
+`home.packages`) is therefore enough, no manual copy.
+
 Exit codes: `0` success, `1` runtime failure, `2` invalid arguments or config,
 `141` when stdout is closed early (SIGPIPE convention, e.g. `zix | head`).
 Diagnostics go to stderr; stdout carries only the normal report. ANSI colors

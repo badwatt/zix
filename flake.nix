@@ -45,6 +45,16 @@
 
           postInstall = ''
             install -Dm644 ${./zix.1} "$out/share/man/man1/zix.1"
+
+            mkdir -p "$out/share/zsh/site-functions" \
+                     "$out/share/fish/vendor_completions.d" \
+                     "$out/share/bash-completion/completions"
+            "$out/bin/zix" --completions zsh  > "$out/share/zsh/site-functions/_zix"
+            "$out/bin/zix" --completions fish > "$out/share/fish/vendor_completions.d/zix.fish"
+            "$out/bin/zix" --completions bash > "$out/share/bash-completion/completions/zix"
+            chmod 644 "$out/share/zsh/site-functions/_zix" \
+                      "$out/share/fish/vendor_completions.d/zix.fish" \
+                      "$out/share/bash-completion/completions/zix"
           '';
         });
 
