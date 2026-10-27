@@ -19,9 +19,9 @@ pub const Config = struct {
     /// Number of generations to keep when pruning.
     keep: u8,
     /// Maximum parallel Nix builds, or null to use the Nix configuration.
-    jobs: ?u8,
+    jobs: ?u16,
     /// Maximum parallel jobs for a single build, or null for the Nix config.
-    cores: ?u8,
+    cores: ?u16,
     /// Whether to run `nix flake update` before rebuild.
     update: bool,
     /// Whether to show nix profile diff-closures after rebuild.

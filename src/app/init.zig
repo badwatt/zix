@@ -305,17 +305,35 @@ fn setValue(
     switch (key) {
         .repo => config.repo = value,
         .hostname => config.hostname = value,
-        .keep => config.keep = parseKeep(value, label, writer) orelse return false,
-        .jobs => config.jobs = parseKeep(value, label, writer) orelse return false,
-        .cores => config.cores = parseKeep(value, label, writer) orelse return false,
+        .keep => config.keep = parseNumber(u8, value, label, writer) orelse return false,
+        .jobs => config.jobs = parseNumber(u16, value, label, writer) orelse return false,
+        .cores => config.cores = parseNumber(u16, value, label, writer) orelse return false,
     }
     return true;
 }
 
-/// Parses a numeric `--keep` value (>= 1), or reports an error.
-fn parseKeep(value: []const u8, label: []const u8, writer: *std.Io.Writer) ?u8 {
-    const num = std.fmt.parseInt(u8, value, 10) catch {
-        printParseError(writer, "Value of \"{s}\" flag is not numeric.", .{label});
+/// Parses a numeric flag value of at least 1, or reports why it was rejected.
+/// The target type caps the value; an overflow names the accepted maximum so
+/// `-k 256` is not misreported as "not numeric".
+fn parseNumber(
+    comptime T: type,
+    value: []const u8,
+    label: []const u8,
+    writer: *std.Io.Writer,
+) ?T {
+    const num = std.fmt.parseInt(T, value, 10) catch |err| {
+        switch (err) {
+            error.Overflow => printParseError(
+                writer,
+                "Value of \"{s}\" flag must be at most {d}.",
+                .{ label, std.math.maxInt(T) },
+            ),
+            error.InvalidCharacter => printParseError(
+                writer,
+                "Value of \"{s}\" flag is not numeric.",
+                .{label},
+            ),
+        }
         return null;
     };
     if (num == 0) {
@@ -471,8 +489,8 @@ test "parse accepts inline long values" {
     try std.testing.expectEqualStrings("/r", config.repo);
     try std.testing.expectEqualStrings("h", config.hostname);
     try std.testing.expectEqual(@as(u8, 5), config.keep);
-    try std.testing.expectEqual(@as(?u8, 4), config.jobs);
-    try std.testing.expectEqual(@as(?u8, 2), config.cores);
+    try std.testing.expectEqual(@as(?u16, 4), config.jobs);
+    try std.testing.expectEqual(@as(?u16, 2), config.cores);
 }
 
 test "parse accepts an inline value that starts with a dash" {
@@ -495,28 +513,61 @@ test "parse folds the jobs flag" {
         Intent.run,
         parseIntent(&.{ "zix", "-j", "4" }, &short, &writer),
     );
-    try std.testing.expectEqual(@as(?u8, 4), short.jobs);
+    try std.testing.expectEqual(@as(?u16, 4), short.jobs);
 
     var long = testConfig();
     try std.testing.expectEqual(
         Intent.run,
         parseIntent(&.{ "zix", "--jobs", "2" }, &long, &writer),
     );
-    try std.testing.expectEqual(@as(?u8, 2), long.jobs);
+    try std.testing.expectEqual(@as(?u16, 2), long.jobs);
 
     var cores = testConfig();
     try std.testing.expectEqual(
         Intent.run,
         parseIntent(&.{ "zix", "-c", "6" }, &cores, &writer),
     );
-    try std.testing.expectEqual(@as(?u8, 6), cores.cores);
+    try std.testing.expectEqual(@as(?u16, 6), cores.cores);
 
     var cores_long = testConfig();
     try std.testing.expectEqual(
         Intent.run,
         parseIntent(&.{ "zix", "--cores", "3" }, &cores_long, &writer),
     );
-    try std.testing.expectEqual(@as(?u8, 3), cores_long.cores);
+    try std.testing.expectEqual(@as(?u16, 3), cores_long.cores);
+}
+
+test "parse accepts the numeric maximums" {
+    var buf: [256]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    var config = testConfig();
+    try std.testing.expectEqual(
+        Intent.run,
+        parseIntent(&.{ "zix", "-k", "255", "-j", "65535", "-c", "65535" }, &config, &writer),
+    );
+    try std.testing.expectEqual(@as(u8, 255), config.keep);
+    try std.testing.expectEqual(@as(?u16, 65535), config.jobs);
+    try std.testing.expectEqual(@as(?u16, 65535), config.cores);
+}
+
+test "parse reports the accepted numeric range" {
+    const Case = struct {
+        args: []const []const u8,
+        message: []const u8,
+    };
+    const cases = &[_]Case{
+        .{ .args = &.{ "zix", "-k", "256" }, .message = "at most 255" },
+        .{ .args = &.{ "zix", "-j", "65536" }, .message = "at most 65535" },
+        .{ .args = &.{ "zix", "-c", "65536" }, .message = "at most 65535" },
+        .{ .args = &.{ "zix", "-k", "0" }, .message = "at least 1" },
+    };
+    for (cases) |tc| {
+        var buf: [512]u8 = undefined;
+        var writer = std.Io.Writer.fixed(&buf);
+        var config = testConfig();
+        try std.testing.expectEqual(Intent.invalid, parseIntent(tc.args, &config, &writer));
+        try std.testing.expect(std.mem.indexOf(u8, &buf, tc.message) != null);
+    }
 }
 
 test "parse rejects invalid input and reports it" {

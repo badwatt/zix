@@ -116,7 +116,7 @@ pub fn nixRebuild(
 }
 
 /// Formats a `--max-jobs`/`--cores` value for `nixos-rebuild`.
-pub fn formatCount(allocator: std.mem.Allocator, value: u8) ![]const u8 {
+pub fn formatCount(allocator: std.mem.Allocator, value: u16) ![]const u8 {
     std.debug.assert(value > 0);
     return std.fmt.allocPrint(allocator, "{d}", .{value});
 }
