@@ -139,7 +139,7 @@ zix --only stage,rebuild        # no pull, no cleanup
 ```
 
 The list wins over `--update`/`--diff`, and a run that skips `rebuild` does not
-need a detected hostname.
+need a detected hostname. Declining the staging prompt aborts the run.
 
 ### Shell completions and man page
 

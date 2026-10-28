@@ -113,7 +113,7 @@ pub fn execute(
 
     if (config.runs(.flake)) try flakeUpdate(io, writer, commands, deps);
 
-    if (config.runs(.stage)) try stage(io, writer, config, commands, deps);
+    if (config.runs(.stage) and !try stage(io, writer, config, commands, deps)) return;
     if (config.runs(.rebuild)) try rebuild(io, writer, commands, deps);
     if (config.runs(.cleanup)) try cleanup(io, commands, deps);
 
@@ -146,20 +146,21 @@ fn flakeUpdate(io: std.Io, writer: *std.Io.Writer, commands: *const Commands, de
 }
 
 /// Detects changes (including untracked files) and, if confirmed, stages them.
+/// Returns false when the user declines, so the caller aborts the pipeline.
 fn stage(
     io: std.Io,
     writer: *std.Io.Writer,
     config: Config,
     commands: *const Commands,
     deps: Deps,
-) anyerror!void {
+) anyerror!bool {
     const status = try deps.runner.capture(io, deps.allocator, &commands.git_status);
     defer status.deinit(deps.allocator);
     if (status.code != 0) {
         if (status.stderr.len > 0) try deps.ui.output(deps.err_writer, status.stderr);
         return fail(deps, Error.GitStatusFailed, "Failed to read repository status");
     }
-    if (std.mem.trim(u8, status.stdout, " \t\r\n").len == 0) return;
+    if (std.mem.trim(u8, status.stdout, " \t\r\n").len == 0) return true;
 
     try deps.ui.title(writer, "Git Changes");
     try deps.ui.output(writer, status.stdout);
@@ -171,13 +172,14 @@ fn stage(
     ))) {
         // Nothing was staged, so the rebuild would evaluate a stale flake.
         try deps.ui.output(writer, "Changes not added to stage; aborting.\n");
-        return;
+        return false;
     }
 
     if (try deps.runner.run(io, &commands.git_add) != 0) {
         return fail(deps, Error.GitAddFailed, "Failed to add changes to the stage");
     }
     try deps.ui.success(writer, "Changes added to git stage successfully");
+    return true;
 }
 
 /// Rebuilds and switches the system.
@@ -597,7 +599,7 @@ test "execute stages changes when confirmed" {
     try std.testing.expectEqualStrings("Changes added to git stage successfully", last_success);
 }
 
-test "execute declines staging changes" {
+test "execute aborts when staging changes is declined" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var environ = std.process.Environ.Map.init(std.testing.allocator);
@@ -605,12 +607,15 @@ test "execute declines staging changes" {
     resetMocks();
     capture_output = " M file\n";
     confirm_false_at = 2; // initial prompt yes, staging prompt no.
+    fail_needle = "switch"; // the rebuild must not run
 
-    const config = testConfig("host");
+    var config = testConfig("host");
+    config.diff = true; // neither must the diff
     const commands = try buildCommands(config, .ng, arena.allocator());
     var buf: [1024]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buf);
     try execute(std.testing.io, &writer, config, &commands, testDeps(arena.allocator(), &environ));
+    try std.testing.expectEqual(@as(u32, 2), confirm_count);
     try std.testing.expectEqualStrings("Changes not added to stage; aborting.\n", last_output);
 }
 
