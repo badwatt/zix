@@ -14,9 +14,9 @@ const process = @import("core/process.zig");
 const StaticAllocator = @import("core/static_allocator.zig");
 
 /// Application entry point. Sets up the arena + static allocator, collects
-/// args, wires dependency injection, runs app logic, and maps errors to exit
-/// codes (2 for invalid usage, 1 otherwise).
-pub fn main(init: std.process.Init) !void {
+/// args, wires dependency injection, runs app logic, and returns the process
+/// exit code (2 for invalid usage, 1 otherwise).
+pub fn main(init: std.process.Init) !u8 {
     const io = init.io;
     const arena = init.arena;
     const args = init.minimal.args;
@@ -58,7 +58,7 @@ pub fn main(init: std.process.Init) !void {
     app.run(io, &stdout_writer.interface, args_list.items, deps, &static_allocator) catch |err| {
         // A closed stdout (e.g. `zix | head`) is a normal way to stop; report
         // it the way a SIGPIPE'd process would instead of an "unexpected error".
-        if (err == error.WriteFailed) std.process.exit(141);
+        if (err == error.WriteFailed) return 141;
 
         // Use the same stderr writer as the workflow: mixing it with
         // `std.debug.print` corrupts the stream when stderr is a file.
@@ -66,12 +66,13 @@ pub fn main(init: std.process.Init) !void {
         const msg = std.fmt.bufPrint(&err_buf, "Error: {s}", .{cli.errorMessage(err)}) catch
             cli.errorMessage(err);
         ui.printError(&stderr_writer.interface, msg) catch {};
-        std.process.exit(cli.exitCode(err));
+        return cli.exitCode(err);
     };
 
     // Transition from static to deinit only if run() reached the static phase.
     // Early returns (help, version, errors) never transition to static.
     static_allocator.transition_from_static_to_deinit_if_static();
+    return 0;
 }
 
 // Root test block — imports all module tests for `zig build test`.
