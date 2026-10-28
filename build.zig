@@ -143,7 +143,6 @@ fn addCoverage(b: *std.Build, mod: *std.Build.Module, target: std.Build.Resolved
         .root_module = mod,
         .use_llvm = true,
     });
-    b.installArtifact(test_compile);
 
     // Coverage report tool
     const report_mod = b.createModule(.{
@@ -155,11 +154,10 @@ fn addCoverage(b: *std.Build, mod: *std.Build.Module, target: std.Build.Resolved
         .name = "coverage-report",
         .root_module = report_mod,
     });
-    b.installArtifact(report_exe);
 
-    // kcov step. The install prefix is not known while configuring the build
-    // graph, so the test and report binaries are passed as positional args
-    // (`$1`, `$2`) resolved from the compile steps.
+    // kcov step. The test and report binaries are passed as positional args
+    // (`$1`, `$2`) resolved from the compile steps, so they never land in
+    // `zig-out/bin` (and therefore not in the Nix package either).
     const kcov = b.addSystemCommand(&.{ "sh", "-c" });
     kcov.addArg("rm -rf coverage && ZIX_TEST_BIN=\"$1\" nix-shell -p kcov --run 'kcov --include-pattern=src ./coverage \"$ZIX_TEST_BIN\"' && \"$2\" coverage");
     kcov.addArg("zix-coverage"); // $0
