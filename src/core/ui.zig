@@ -70,9 +70,7 @@ pub fn printTitle(writer: *std.Io.Writer, text: []const u8) !void {
 
     var border_buf: [MAX_TITLE_LEN]u8 = undefined;
     const border = border_buf[0 .. text.len + 4];
-    for (border) |*c| {
-        c.* = '*';
-    }
+    @memset(border, '*');
     try io.printTo(
         writer,
         "{s}\n{s}\n* {s}{s}{s} *\n{s}\n{s}",

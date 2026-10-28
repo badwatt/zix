@@ -55,15 +55,20 @@ pub const Runner = struct {
 /// Production runner backed by `std.process`.
 pub const real = Runner{ .runFn = realRun, .captureFn = realCapture, .probeFn = realProbe };
 
-fn realRun(_: ?*anyopaque, io: std.Io, argv: Runner.Command) anyerror!i32 {
+/// Spawns `argv` with the given stdio and waits, returning its exit code.
+fn spawnAndWait(io: std.Io, argv: Runner.Command, stdio: std.process.SpawnOptions.StdIo) anyerror!i32 {
     std.debug.assert(argv.len > 0);
     var child = try std.process.spawn(io, .{
         .argv = argv,
-        .stdin = .inherit,
-        .stdout = .inherit,
-        .stderr = .inherit,
+        .stdin = stdio,
+        .stdout = stdio,
+        .stderr = stdio,
     });
     return termCode(try child.wait(io));
+}
+
+fn realRun(_: ?*anyopaque, io: std.Io, argv: Runner.Command) anyerror!i32 {
+    return spawnAndWait(io, argv, .inherit);
 }
 
 fn realCapture(
@@ -82,14 +87,7 @@ fn realCapture(
 }
 
 fn realProbe(_: ?*anyopaque, io: std.Io, argv: Runner.Command) anyerror!i32 {
-    std.debug.assert(argv.len > 0);
-    var child = try std.process.spawn(io, .{
-        .argv = argv,
-        .stdin = .ignore,
-        .stdout = .ignore,
-        .stderr = .ignore,
-    });
-    return termCode(try child.wait(io));
+    return spawnAndWait(io, argv, .ignore);
 }
 
 /// Exit code for a terminated child. A process killed or stopped by signal N
