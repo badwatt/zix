@@ -1,87 +1,68 @@
 {
-  description = "Zig project flake";
+  description = "zix - a simple CLI tool to update your NixOS system";
 
-  inputs = {
-    zig2nix.url = "github:Cloudef/zig2nix";
-  };
+  inputs.zig2nix.url = "github:Cloudef/zig2nix";
 
   outputs =
-    { zig2nix, ... }:
-    let
-      flake-utils = zig2nix.inputs.flake-utils;
-    in
-    (flake-utils.lib.eachDefaultSystem (
+    { self, zig2nix, ... }:
+    zig2nix.inputs.flake-utils.lib.eachDefaultSystem (
       system:
       let
-        env = zig2nix.outputs.zig-env.${system} { zig = zig2nix.outputs.packages.${system}.zig-0_17_0; };
-      in
-      with builtins;
-      with env.pkgs.lib;
-      rec {
-        packages.foreign = env.package (
-          {
-            src = cleanSource ./.;
+        env = zig2nix.outputs.zig-env.${system} {
+          zig = zig2nix.outputs.packages.${system}.zig-0_17_0;
+        };
+        lib = env.pkgs.lib;
 
-            nativeBuildInputs = with env.pkgs; [ ];
+        # Arguments shared by the packaged variants. `build.zig.zon` supplies
+        # the pname and version, so they are not repeated here.
+        base = {
+          src = self;
+          zigPreferMusl = true;
+          meta = {
+            description = "A simple CLI tool to update your NixOS system";
+            homepage = "https://github.com/badwatt/zix";
+            license = lib.licenses.mit;
+            mainProgram = "zix";
+            platforms = lib.platforms.linux;
+          };
+        };
 
-            buildInputs = with env.pkgs; [ ];
-
-            zigPreferMusl = true;
-
-            zigDisableWrap = true;
-          }
-          // optionalAttrs (!pathExists ./build.zig.zon) {
-            pname = "zix";
-            version = "0.0.0";
-          }
-        );
-
-        packages.default = packages.foreign.overrideAttrs (attrs: {
-          zigPreferMusl = false;
-
-          zigWrapperBins = with env.pkgs; [ ];
-
-          zigWrapperLibs = with env.pkgs; [ ];
-
+        # Installable package: binary, man page and shell completions.
+        default = env.package (base // {
           postInstall = ''
             install -Dm644 ${./zix.1} "$out/share/man/man1/zix.1"
 
-            mkdir -p "$out/share/zsh/site-functions" \
-                     "$out/share/fish/vendor_completions.d" \
-                     "$out/share/bash-completion/completions"
-            "$out/bin/zix" --completions zsh  > "$out/share/zsh/site-functions/_zix"
-            "$out/bin/zix" --completions fish > "$out/share/fish/vendor_completions.d/zix.fish"
+            install -d "$out/share/bash-completion/completions" \
+                       "$out/share/fish/vendor_completions.d" \
+                       "$out/share/zsh/site-functions"
             "$out/bin/zix" --completions bash > "$out/share/bash-completion/completions/zix"
-            chmod 644 "$out/share/zsh/site-functions/_zix" \
-                      "$out/share/fish/vendor_completions.d/zix.fish" \
-                      "$out/share/bash-completion/completions/zix"
+            "$out/bin/zix" --completions fish > "$out/share/fish/vendor_completions.d/zix.fish"
+            "$out/bin/zix" --completions zsh  > "$out/share/zsh/site-functions/_zix"
           '';
         });
 
-        apps.bundle = {
+        # Raw static binary, without man page or completions.
+        foreign = env.package base;
+
+        appFor = pkg: {
           type = "app";
-          program = "${packages.foreign}/bin/default";
+          program = "${pkg}/bin/zix";
+        };
+      in
+      {
+        packages = { inherit default foreign; };
+
+        apps = {
+          default = appFor default;
+          static = appFor foreign;
+          dev = env.app [ ] "zig build run --release=fast -- \"$@\"";
+          build = env.app [ ] "zig build --release=fast \"$@\"";
+          test = env.app [ ] "zig build test -- \"$@\"";
+          docs = env.app [ ] "zig build docs --release=fast -- \"$@\"";
+          zig2nix = env.app [ ] "zig2nix \"$@\"";
         };
 
-        # nix run .
-        apps.default = env.app [ ] "zig build run --release=fast -- \"$@\"";
-
-        # nix run .#build
-        apps.build = env.app [ ] "zig build --release=fast \"$@\"";
-
-        # nix run .#test
-        apps.test = env.app [ ] "zig build test --release=fast -- \"$@\"";
-
-        # nix run .#docs
-        apps.docs = env.app [ ] "zig build docs --release=fast -- \"$@\"";
-
-        # nix run .#zig2nix
-        apps.zig2nix = env.app [ ] "zig2nix \"$@\"";
-
-        # nix develop
-        devShells.default = env.mkShell {
-          nativeBuildInputs = with env.pkgs; [ ];
-        };
+        devShells.default = env.mkShell { };
       }
-    ));
+    );
 }

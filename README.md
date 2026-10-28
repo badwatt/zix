@@ -54,6 +54,15 @@ Add to flake:
 }
 ```
 
+From a checkout:
+
+```sh
+nix build .#default   # binary, man page and shell completions
+nix build .#foreign   # raw static binary, for copying elsewhere
+nix run .#dev -- ...  # build and run the working tree
+nix run .#test        # unit, integration and build-tool tests
+```
+
 ## Releases
 
 Every `build.zig.zon` version bump on `main` is tagged and published with
