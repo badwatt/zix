@@ -12,22 +12,29 @@ pub const DEFAULT_KEEP = 10;
 
 /// One step of the update pipeline, in execution order. `--only` selects an
 /// explicit subset; `Config.runs` decides which steps run.
-pub const Step = enum { pull, flake, stage, rebuild, cleanup, diff };
+pub const Step = enum {
+    pull,
+    flake,
+    stage,
+    rebuild,
+    cleanup,
+    diff,
 
-/// Comma-separated step names, for error messages.
-pub const step_names = "pull,flake,stage,rebuild,cleanup,diff";
+    /// Comma-separated step names, for error messages.
+    pub const names = "pull,flake,stage,rebuild,cleanup,diff";
 
-/// CLI name of a step (`--only <name>`).
-pub fn stepName(step: Step) []const u8 {
-    return @tagName(step);
-}
+    /// CLI name of the step.
+    pub fn name(self: Step) []const u8 {
+        return @tagName(self);
+    }
 
-/// Looks a step up by its CLI name. `update` is an alias for `flake`, matching
-/// the `--update` flag people already know.
-pub fn stepFromName(name: []const u8) ?Step {
-    if (std.mem.eql(u8, name, "update")) return .flake;
-    return std.meta.stringToEnum(Step, name);
-}
+    /// Looks a step up by its CLI name. `update` aliases `flake`, matching the
+    /// `--update` flag people already know.
+    pub fn fromName(value: []const u8) ?Step {
+        if (std.mem.eql(u8, value, "update")) return .flake;
+        return std.meta.stringToEnum(Step, value);
+    }
+};
 
 /// CLI configuration struct. All fields have sensible defaults.
 pub const Config = struct {
@@ -182,11 +189,11 @@ test "runs follows an explicit --only set" {
 
 test "step names round-trip and update aliases flake" {
     for ([_]Step{ .pull, .flake, .stage, .rebuild, .cleanup, .diff }) |step| {
-        try std.testing.expectEqual(step, stepFromName(stepName(step)).?);
+        try std.testing.expectEqual(step, Step.fromName(step.name()).?);
     }
-    try std.testing.expectEqual(Step.flake, stepFromName("update").?);
-    try std.testing.expectEqual(@as(?Step, null), stepFromName("bogus"));
-    try std.testing.expectEqualStrings("pull,flake,stage,rebuild,cleanup,diff", step_names);
+    try std.testing.expectEqual(Step.flake, Step.fromName("update").?);
+    try std.testing.expectEqual(@as(?Step, null), Step.fromName("bogus"));
+    try std.testing.expectEqualStrings("pull,flake,stage,rebuild,cleanup,diff", Step.names);
 }
 
 test "expandTilde expands home" {

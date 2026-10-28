@@ -95,7 +95,7 @@ pub fn execute(
     io: std.Io,
     writer: *std.Io.Writer,
     config: Config,
-    commands: Commands,
+    commands: *const Commands,
     deps: Deps,
 ) anyerror!void {
     std.debug.assert(config.repo.len > 0);
@@ -120,25 +120,28 @@ pub fn execute(
     if (config.runs(.diff)) try showDiff(io, writer, commands, deps);
 }
 
+/// Reports `msg` on stderr and returns `err`.
+fn fail(deps: Deps, err: Error, msg: []const u8) anyerror {
+    try deps.ui.err(deps.err_writer, msg);
+    return err;
+}
+
 /// Verifies the repo is a git work tree, then pulls.
-fn pull(io: std.Io, writer: *std.Io.Writer, commands: Commands, deps: Deps) anyerror!void {
+fn pull(io: std.Io, writer: *std.Io.Writer, commands: *const Commands, deps: Deps) anyerror!void {
     try deps.ui.title(writer, "Git Pull");
     if (try deps.runner.probe(io, &commands.git_rev_parse) != 0) {
-        try deps.ui.err(deps.err_writer, "Repository is not a git working tree");
-        return Error.NotAGitRepo;
+        return fail(deps, Error.NotAGitRepo, "Repository is not a git working tree");
     }
     if (try deps.runner.run(io, &commands.git_pull) != 0) {
-        try deps.ui.err(deps.err_writer, "Failed to pull changes");
-        return Error.GitPullFailed;
+        return fail(deps, Error.GitPullFailed, "Failed to pull changes");
     }
 }
 
 /// Runs `nix flake update`.
-fn flakeUpdate(io: std.Io, writer: *std.Io.Writer, commands: Commands, deps: Deps) anyerror!void {
+fn flakeUpdate(io: std.Io, writer: *std.Io.Writer, commands: *const Commands, deps: Deps) anyerror!void {
     try deps.ui.title(writer, "Nix Update");
     if (try deps.runner.run(io, &commands.nix_update) != 0) {
-        try deps.ui.err(deps.err_writer, "Failed to update flake inputs");
-        return Error.FlakeUpdateFailed;
+        return fail(deps, Error.FlakeUpdateFailed, "Failed to update flake inputs");
     }
 }
 
@@ -147,15 +150,14 @@ fn stage(
     io: std.Io,
     writer: *std.Io.Writer,
     config: Config,
-    commands: Commands,
+    commands: *const Commands,
     deps: Deps,
 ) anyerror!void {
     const status = try deps.runner.capture(io, deps.allocator, &commands.git_status);
     defer status.deinit(deps.allocator);
     if (status.code != 0) {
         if (status.stderr.len > 0) try deps.ui.output(deps.err_writer, status.stderr);
-        try deps.ui.err(deps.err_writer, "Failed to read repository status");
-        return Error.GitStatusFailed;
+        return fail(deps, Error.GitStatusFailed, "Failed to read repository status");
     }
     if (std.mem.trim(u8, status.stdout, " \t\r\n").len == 0) return;
 
@@ -173,52 +175,45 @@ fn stage(
     }
 
     if (try deps.runner.run(io, &commands.git_add) != 0) {
-        try deps.ui.err(deps.err_writer, "Failed to add changes to the stage");
-        return Error.GitAddFailed;
+        return fail(deps, Error.GitAddFailed, "Failed to add changes to the stage");
     }
     try deps.ui.success(writer, "Changes added to git stage successfully");
 }
 
 /// Rebuilds and switches the system.
-fn rebuild(io: std.Io, writer: *std.Io.Writer, commands: Commands, deps: Deps) anyerror!void {
+fn rebuild(io: std.Io, writer: *std.Io.Writer, commands: *const Commands, deps: Deps) anyerror!void {
     try deps.ui.title(writer, "Nixos Rebuild");
     const code = try deps.runner.run(io, commands.nix_rebuild.slice());
-    if (code != 0) {
-        // 128 + N is the shell convention for a signal-terminated child. An
-        // out-of-memory kill can arrive this way, so point at --jobs.
-        if (code >= 128) {
-            try deps.ui.err(
-                deps.err_writer,
-                "nixos-rebuild was terminated by a signal; if the build ran out of memory, lower --cores/--jobs",
-            );
-        } else {
-            try deps.ui.err(deps.err_writer, "Nixos rebuild failed");
-        }
-        return Error.RebuildFailed;
+    if (code == 0) return;
+    // 128 + N is the shell convention for a signal-terminated child. An
+    // out-of-memory kill can arrive this way, so point at --jobs.
+    if (code >= 128) {
+        return fail(
+            deps,
+            Error.RebuildFailed,
+            "nixos-rebuild was terminated by a signal; if the build ran out of memory, lower --cores/--jobs",
+        );
     }
+    return fail(deps, Error.RebuildFailed, "Nixos rebuild failed");
 }
 
 /// Prunes old generations and frees unreferenced store paths.
-fn cleanup(io: std.Io, commands: Commands, deps: Deps) anyerror!void {
-    if (try deps.runner.run(io, &commands.nix_keep) != 0) {
-        try deps.ui.err(deps.err_writer, "Cleanup failed");
-        return Error.CleanupFailed;
-    }
-    if (try deps.runner.run(io, &commands.nix_gc) != 0) {
-        try deps.ui.err(deps.err_writer, "Cleanup failed");
-        return Error.CleanupFailed;
+fn cleanup(io: std.Io, commands: *const Commands, deps: Deps) anyerror!void {
+    for ([_][]const []const u8{ &commands.nix_keep, &commands.nix_gc }) |argv| {
+        if (try deps.runner.run(io, argv) != 0) {
+            return fail(deps, Error.CleanupFailed, "Cleanup failed");
+        }
     }
 }
 
 /// Shows the closure diff from the last `Version` line onward.
-fn showDiff(io: std.Io, writer: *std.Io.Writer, commands: Commands, deps: Deps) anyerror!void {
+fn showDiff(io: std.Io, writer: *std.Io.Writer, commands: *const Commands, deps: Deps) anyerror!void {
     try deps.ui.title(writer, "Nix Diff");
     const output = try deps.runner.capture(io, deps.allocator, &commands.nix_diff);
     defer output.deinit(deps.allocator);
     if (output.code != 0) {
         if (output.stderr.len > 0) try deps.ui.output(deps.err_writer, output.stderr);
-        try deps.ui.err(deps.err_writer, "Failed to compute closure diff");
-        return Error.DiffFailed;
+        return fail(deps, Error.DiffFailed, "Failed to compute closure diff");
     }
     const tail = cmd.tailFromLastVersion(output.stdout);
     try deps.ui.output(writer, tail);
@@ -426,7 +421,7 @@ test "execute reports a signal-terminated rebuild" {
     var writer = std.Io.Writer.fixed(&buf);
     try std.testing.expectError(
         Error.RebuildFailed,
-        execute(std.testing.io, &writer, config, commands, testDeps(arena.allocator(), &environ)),
+        execute(std.testing.io, &writer, config, &commands, testDeps(arena.allocator(), &environ)),
     );
     try std.testing.expect(std.mem.indexOf(u8, last_error, "signal") != null);
 }
@@ -463,8 +458,28 @@ test "execute happy path needs no confirmations when yes" {
 
     var buf: [512]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buf);
-    try execute(std.testing.io, &writer, config, commands, testDeps(arena.allocator(), &environ));
+    try execute(std.testing.io, &writer, config, &commands, testDeps(arena.allocator(), &environ));
     try std.testing.expectEqual(@as(u32, 0), confirm_count);
+}
+
+test "execute frees every captured buffer" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var environ = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ.deinit();
+    resetMocks();
+    capture_output = "Version 2\nchanged\n";
+
+    var config = testConfig("host");
+    config.yes = true;
+    config.diff = true;
+    const commands = try buildCommands(config, .ng, arena.allocator());
+
+    var buf: [1024]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    // The capture allocator is the leak checker: an unfreed Capture fails here.
+    try execute(std.testing.io, &writer, config, &commands, testDeps(std.testing.allocator, &environ));
+    try std.testing.expectEqualStrings("Version 2\nchanged\n", last_output);
 }
 
 test "execute aborts when initial confirmation is declined" {
@@ -479,7 +494,7 @@ test "execute aborts when initial confirmation is declined" {
     const commands = try buildCommands(config, .ng, arena.allocator());
     var buf: [512]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buf);
-    try execute(std.testing.io, &writer, config, commands, testDeps(arena.allocator(), &environ));
+    try execute(std.testing.io, &writer, config, &commands, testDeps(arena.allocator(), &environ));
     try std.testing.expectEqual(@as(u32, 1), confirm_count);
     try std.testing.expectEqualStrings("Aborted.\n", last_output);
 }
@@ -499,7 +514,7 @@ test "execute fails when repo is not a git work tree" {
     var writer = std.Io.Writer.fixed(&buf);
     try std.testing.expectError(
         Error.NotAGitRepo,
-        execute(std.testing.io, &writer, config, commands, testDeps(arena.allocator(), &environ)),
+        execute(std.testing.io, &writer, config, &commands, testDeps(arena.allocator(), &environ)),
     );
     try std.testing.expectEqualStrings("Repository is not a git working tree", last_error);
 }
@@ -519,7 +534,7 @@ test "execute fails when git pull fails" {
     var writer = std.Io.Writer.fixed(&buf);
     try std.testing.expectError(
         Error.GitPullFailed,
-        execute(std.testing.io, &writer, config, commands, testDeps(arena.allocator(), &environ)),
+        execute(std.testing.io, &writer, config, &commands, testDeps(arena.allocator(), &environ)),
     );
 }
 
@@ -539,7 +554,7 @@ test "execute fails when flake update fails" {
     var writer = std.Io.Writer.fixed(&buf);
     try std.testing.expectError(
         Error.FlakeUpdateFailed,
-        execute(std.testing.io, &writer, config, commands, testDeps(arena.allocator(), &environ)),
+        execute(std.testing.io, &writer, config, &commands, testDeps(arena.allocator(), &environ)),
     );
 }
 
@@ -559,7 +574,7 @@ test "execute fails when git status cannot be read" {
     var writer = std.Io.Writer.fixed(&buf);
     try std.testing.expectError(
         Error.GitStatusFailed,
-        execute(std.testing.io, &writer, config, commands, testDeps(arena.allocator(), &environ)),
+        execute(std.testing.io, &writer, config, &commands, testDeps(arena.allocator(), &environ)),
     );
     try std.testing.expect(std.mem.indexOf(u8, last_output, "fatal: not a git repository") != null);
 }
@@ -577,7 +592,7 @@ test "execute stages changes when confirmed" {
     const commands = try buildCommands(config, .ng, arena.allocator());
     var buf: [1024]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buf);
-    try execute(std.testing.io, &writer, config, commands, testDeps(arena.allocator(), &environ));
+    try execute(std.testing.io, &writer, config, &commands, testDeps(arena.allocator(), &environ));
     try std.testing.expectEqualStrings(" M src/main.zig\n", last_output);
     try std.testing.expectEqualStrings("Changes added to git stage successfully", last_success);
 }
@@ -595,7 +610,7 @@ test "execute declines staging changes" {
     const commands = try buildCommands(config, .ng, arena.allocator());
     var buf: [1024]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buf);
-    try execute(std.testing.io, &writer, config, commands, testDeps(arena.allocator(), &environ));
+    try execute(std.testing.io, &writer, config, &commands, testDeps(arena.allocator(), &environ));
     try std.testing.expectEqualStrings("Changes not added to stage; aborting.\n", last_output);
 }
 
@@ -615,7 +630,7 @@ test "execute fails when git add fails" {
     var writer = std.Io.Writer.fixed(&buf);
     try std.testing.expectError(
         Error.GitAddFailed,
-        execute(std.testing.io, &writer, config, commands, testDeps(arena.allocator(), &environ)),
+        execute(std.testing.io, &writer, config, &commands, testDeps(arena.allocator(), &environ)),
     );
 }
 
@@ -634,7 +649,7 @@ test "execute fails when rebuild fails" {
     var writer = std.Io.Writer.fixed(&buf);
     try std.testing.expectError(
         Error.RebuildFailed,
-        execute(std.testing.io, &writer, config, commands, testDeps(arena.allocator(), &environ)),
+        execute(std.testing.io, &writer, config, &commands, testDeps(arena.allocator(), &environ)),
     );
 }
 
@@ -653,7 +668,7 @@ test "execute fails when generation pruning fails" {
     var writer = std.Io.Writer.fixed(&buf);
     try std.testing.expectError(
         Error.CleanupFailed,
-        execute(std.testing.io, &writer, config, commands, testDeps(arena.allocator(), &environ)),
+        execute(std.testing.io, &writer, config, &commands, testDeps(arena.allocator(), &environ)),
     );
 }
 
@@ -672,7 +687,7 @@ test "execute fails when garbage collection fails" {
     var writer = std.Io.Writer.fixed(&buf);
     try std.testing.expectError(
         Error.CleanupFailed,
-        execute(std.testing.io, &writer, config, commands, testDeps(arena.allocator(), &environ)),
+        execute(std.testing.io, &writer, config, &commands, testDeps(arena.allocator(), &environ)),
     );
 }
 
@@ -690,7 +705,7 @@ test "execute shows diff when requested" {
     const commands = try buildCommands(config, .ng, arena.allocator());
     var buf: [1024]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buf);
-    try execute(std.testing.io, &writer, config, commands, testDeps(arena.allocator(), &environ));
+    try execute(std.testing.io, &writer, config, &commands, testDeps(arena.allocator(), &environ));
     try std.testing.expectEqualStrings("Version 2\nchanged\n", last_output);
 }
 
@@ -708,7 +723,7 @@ test "execute appends newline when diff tail lacks one" {
     const commands = try buildCommands(config, .ng, arena.allocator());
     var buf: [1024]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buf);
-    try execute(std.testing.io, &writer, config, commands, testDeps(arena.allocator(), &environ));
+    try execute(std.testing.io, &writer, config, &commands, testDeps(arena.allocator(), &environ));
     try std.testing.expect(std.mem.endsWith(u8, buf[0..writer.end], "\n"));
 }
 
@@ -729,7 +744,7 @@ test "execute fails when diff-closures fails" {
     var writer = std.Io.Writer.fixed(&buf);
     try std.testing.expectError(
         Error.DiffFailed,
-        execute(std.testing.io, &writer, config, commands, testDeps(arena.allocator(), &environ)),
+        execute(std.testing.io, &writer, config, &commands, testDeps(arena.allocator(), &environ)),
     );
     try std.testing.expectEqualStrings("Failed to compute closure diff", last_error);
 }
@@ -750,7 +765,7 @@ test "execute runs only the selected steps" {
     const commands = try buildCommands(config, .ng, arena.allocator());
     var buf: [1024]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buf);
-    try execute(std.testing.io, &writer, config, commands, testDeps(arena.allocator(), &environ));
+    try execute(std.testing.io, &writer, config, &commands, testDeps(arena.allocator(), &environ));
     try std.testing.expectEqualStrings("Version 2\nchanged\n", last_output);
 }
 
@@ -769,7 +784,7 @@ test "execute skips the diff when it is not selected" {
     const commands = try buildCommands(config, .ng, arena.allocator());
     var buf: [512]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buf);
-    try execute(std.testing.io, &writer, config, commands, testDeps(arena.allocator(), &environ));
+    try execute(std.testing.io, &writer, config, &commands, testDeps(arena.allocator(), &environ));
 }
 
 test "errorMessage and exitCode cover every variant" {
