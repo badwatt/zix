@@ -167,7 +167,10 @@ fn parseLong(
     const inline_value: ?[]const u8 = if (eq) |index| arg[index + 1 ..] else null;
 
     if (fromLongName(BoolFlag, name)) |flag| {
-        if (rejectInline(name, inline_value, writer)) return .{ .terminal = .invalid };
+        if (inline_value != null) {
+            printParseError(writer, "\"{s}\" flag does not take a value", .{name});
+            return .{ .terminal = .invalid };
+        }
         switch (flag) {
             .help => return .{ .terminal = .help },
             .version => return .{ .terminal = .version },
@@ -208,13 +211,6 @@ fn parseLong(
     }
     printParseError(writer, "Unknown flag \"{s}\"", .{name});
     return .{ .terminal = .invalid };
-}
-
-/// Reports `--flag=value` for a flag that takes no value.
-fn rejectInline(name: []const u8, value: ?[]const u8, writer: *std.Io.Writer) bool {
-    if (value == null) return false;
-    printParseError(writer, "\"{s}\" flag does not take a value", .{name});
-    return true;
 }
 
 /// A long flag's value and how many extra argv entries it consumed.
