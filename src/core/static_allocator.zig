@@ -21,7 +21,6 @@ state: State,
 /// Allocator lifecycle states.
 const State = enum {
     /// Allow alloc, resize, and free. Used during startup/init.
-    /// Accidentally calling free switches to .deinit for errdefer compatibility.
     init,
     /// Block all allocation. Runtime phase — any alloc call panics.
     static,

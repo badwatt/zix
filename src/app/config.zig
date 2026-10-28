@@ -1,6 +1,6 @@
 //! Application configuration for zix.
 //!
-//! Defines `Config` with defaults, validation, and `~` expansion.
+//! Defines `Step` and `Config` with defaults, validation, and `~` expansion.
 //! Hostname is resolved by the caller; repo defaults to `~/.dotfiles`; keep 10.
 
 const std = @import("std");

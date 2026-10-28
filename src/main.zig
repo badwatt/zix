@@ -1,8 +1,8 @@
 //! Entry point for zix, a NixOS system update CLI.
 //!
 //! Initializes the allocator system, builds the real dependency ports, parses
-//! CLI arguments (inside `app.run`), and maps workflow errors to exit codes.
-//! A two-phase `StaticAllocator` guards the init-time allocations; runtime
+//! CLI arguments (inside `app.run`), and returns workflow errors as exit codes.
+//! A three-phase `StaticAllocator` guards the init-time allocations; runtime
 //! command captures use the general-purpose allocator as scratch memory.
 
 const std = @import("std");
