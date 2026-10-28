@@ -44,16 +44,20 @@ fn testConfirm(_: *std.Io.Writer, _: bool, _: ?[]const u8) anyerror!bool {
 
 // --- Formatting ---
 
+/// Prints `msg` in `color` followed by a newline.
+fn printStyled(writer: *std.Io.Writer, color: []const u8, msg: []const u8) !void {
+    std.debug.assert(msg.len > 0);
+    try io.printTo(writer, "{s}{s}{s}\n", .{ io.style(color), msg, io.style(io.Reset) });
+}
+
 /// Prints a red error message.
 pub fn printError(writer: *std.Io.Writer, msg: []const u8) !void {
-    std.debug.assert(msg.len > 0);
-    try io.printTo(writer, "{s}{s}{s}\n", .{ io.style(io.Red), msg, io.style(io.Reset) });
+    return printStyled(writer, io.Red, msg);
 }
 
 /// Prints a green success message.
 pub fn printSuccess(writer: *std.Io.Writer, msg: []const u8) !void {
-    std.debug.assert(msg.len > 0);
-    try io.printTo(writer, "{s}{s}{s}\n", .{ io.style(io.Green), msg, io.style(io.Reset) });
+    return printStyled(writer, io.Green, msg);
 }
 
 /// Prints captured command output verbatim.
@@ -217,38 +221,25 @@ fn writeConfirmPrompt(
 ) !void {
     const hint_color = if (default_value) io.Green else io.Red;
     const hint = if (default_value) "(Y/n)" else "(y/N)";
-    if (msg) |value| {
-        try io.printTo(writer, "\n{s}{s}{s} {s}{s}{s}: ", .{
-            io.style(io.Yellow),
-            value,
-            io.style(io.Reset),
-            io.style(hint_color),
-            hint,
-            io.style(io.Reset),
-        });
-    } else {
-        try io.printTo(writer, "\n{s}Proceed?{s} {s}{s}{s}: ", .{
-            io.style(io.Yellow),
-            io.style(io.Reset),
-            io.style(hint_color),
-            hint,
-            io.style(io.Reset),
-        });
-    }
+    try io.printTo(writer, "\n{s}{s}{s} {s}{s}{s}: ", .{
+        io.style(io.Yellow),
+        msg orelse "Proceed?",
+        io.style(io.Reset),
+        io.style(hint_color),
+        hint,
+        io.style(io.Reset),
+    });
     try writer.flush();
 }
 
-/// Parses a yes/no response string. "y"/"yes" → true, "n"/"no" → false.
-/// Empty input falls back to `default_value`. Unknown input defaults to false.
+/// Parses a yes/no response. Empty input falls back to `default_value`;
+/// anything other than "y"/"yes" is a no.
 fn parseConfirmResponse(line: []const u8, default_value: bool) bool {
     var lower_buf: [256]u8 = undefined;
     if (line.len > lower_buf.len) return false;
-    const lower = std.ascii.lowerString(&lower_buf, line);
-
-    if (equal(u8, lower, "y") or equal(u8, lower, "yes")) return true;
-    if (equal(u8, lower, "n") or equal(u8, lower, "no")) return false;
     if (line.len == 0) return default_value;
-    return false;
+    const lower = std.ascii.lowerString(&lower_buf, line);
+    return equal(u8, lower, "y") or equal(u8, lower, "yes");
 }
 
 /// Allocating variant of confirm that reads from a `std.Io.Reader`.
