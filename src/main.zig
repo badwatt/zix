@@ -25,6 +25,8 @@ pub fn main(init: std.process.Init) !u8 {
     // workflow starts. Runtime captures use `init.gpa` (see Deps.allocator);
     // the arena is cleaned up automatically on process exit.
     var static_allocator = StaticAllocator.init(arena.allocator());
+    // Every exit path reaches .deinit; the runtime owns the backing arena.
+    defer static_allocator.transition_from_static_to_deinit_if_static();
     const allocator = static_allocator.allocator();
 
     var args_list: std.ArrayList([]const u8) = .empty;
@@ -69,9 +71,6 @@ pub fn main(init: std.process.Init) !u8 {
         return cli.exitCode(err);
     };
 
-    // Transition from static to deinit only if run() reached the static phase.
-    // Early returns (help, version, errors) never transition to static.
-    static_allocator.transition_from_static_to_deinit_if_static();
     return 0;
 }
 
