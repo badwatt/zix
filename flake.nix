@@ -28,18 +28,21 @@
         };
 
         # Installable package: binary, man page and shell completions.
-        default = env.package (base // {
-          postInstall = ''
-            install -Dm644 ${./zix.1} "$out/share/man/man1/zix.1"
+        default = env.package (
+          base
+          // {
+            postInstall = ''
+              install -Dm644 ${./zix.1} "$out/share/man/man1/zix.1"
 
-            install -d "$out/share/bash-completion/completions" \
-                       "$out/share/fish/vendor_completions.d" \
-                       "$out/share/zsh/site-functions"
-            "$out/bin/zix" --completions bash > "$out/share/bash-completion/completions/zix"
-            "$out/bin/zix" --completions fish > "$out/share/fish/vendor_completions.d/zix.fish"
-            "$out/bin/zix" --completions zsh  > "$out/share/zsh/site-functions/_zix"
-          '';
-        });
+              install -d "$out/share/bash-completion/completions" \
+                         "$out/share/fish/vendor_completions.d" \
+                         "$out/share/zsh/site-functions"
+              "$out/bin/zix" --completions bash > "$out/share/bash-completion/completions/zix"
+              "$out/bin/zix" --completions fish > "$out/share/fish/vendor_completions.d/zix.fish"
+              "$out/bin/zix" --completions zsh  > "$out/share/zsh/site-functions/_zix"
+            '';
+          }
+        );
 
         # Raw static binary, without man page or completions.
         foreign = env.package base;
@@ -51,6 +54,10 @@
       in
       {
         packages = { inherit default foreign; };
+
+        checks.default = default;
+
+        formatter = env.pkgs.nixfmt;
 
         apps = {
           default = appFor default;
