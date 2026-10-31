@@ -156,7 +156,7 @@ fn printConfigLine(
 pub fn configPrint(writer: *std.Io.Writer, config: Config) !void {
     std.debug.assert(config.repo.len > 0);
     try printConfigLine(writer, "repo", config.repo);
-    try printConfigLine(writer, "hostname", config.hostname);
+    try printConfigLine(writer, "hostname", config.hostname orelse "<not detected>");
     try printConfigLine(writer, "keep", config.keep);
     if (config.jobs) |jobs| try printConfigLine(writer, "jobs", jobs);
     if (config.cores) |cores| try printConfigLine(writer, "cores", cores);
@@ -412,6 +412,26 @@ test "configPrint shows the effective steps under --only" {
     const out = buf[0..writer.end];
     try std.testing.expect(std.mem.indexOf(u8, out, "update = false") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "diff = true") != null);
+}
+
+test "configPrint shows a missing hostname explicitly" {
+    io.color_enabled = false;
+    defer io.color_enabled = true;
+
+    var buf: [1024]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    try configPrint(&writer, Config{
+        .repo = "r",
+        .hostname = null,
+        .keep = 1,
+        .jobs = null,
+        .cores = null,
+        .update = false,
+        .diff = false,
+        .yes = false,
+        .dry_run = false,
+    });
+    try std.testing.expect(std.mem.indexOf(u8, buf[0..writer.end], "<not detected>") != null);
 }
 
 test "configPrint omits dry-run when it is off" {

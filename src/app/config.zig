@@ -40,8 +40,9 @@ pub const Step = enum {
 pub const Config = struct {
     /// Path to the dotfiles git repository.
     repo: []const u8,
-    /// NixOS hostname for flake rebuild target.
-    hostname: []const u8,
+    /// NixOS hostname for the flake rebuild target, or null when it could not
+    /// be detected and the rebuild is not selected.
+    hostname: ?[]const u8,
     /// Number of generations to keep when pruning.
     keep: u8,
     /// Maximum parallel Nix builds, or null to use the Nix configuration.
@@ -62,7 +63,7 @@ pub const Config = struct {
     only: ?std.EnumSet(Step) = null,
 
     /// Returns a Config with the given hostname and default repo/keep/flags.
-    pub fn defaults(hostname: []const u8) Config {
+    pub fn defaults(hostname: ?[]const u8) Config {
         return .{
             .repo = DEFAULT_REPO,
             .hostname = hostname,
@@ -79,7 +80,9 @@ pub const Config = struct {
     /// Validates config invariants. Returns an error message or null if valid.
     pub fn validate(self: Config) ?[]const u8 {
         if (self.repo.len == 0) return "repo path cannot be empty";
-        if (self.hostname.len == 0) return "hostname cannot be empty";
+        if (self.hostname) |hostname| {
+            if (hostname.len == 0) return "hostname cannot be empty";
+        }
         if (self.keep == 0) return "generations to keep must be > 0";
         if (self.jobs) |jobs| {
             if (jobs == 0) return "jobs must be > 0";
@@ -138,6 +141,11 @@ test "validate rejects empty repo" {
     var config = Config.defaults("nixos");
     config.repo = "";
     try std.testing.expect(config.validate() != null);
+}
+
+test "validate accepts a missing hostname" {
+    const config = Config.defaults(null);
+    try std.testing.expect(config.validate() == null);
 }
 
 test "validate rejects empty hostname" {

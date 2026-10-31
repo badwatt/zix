@@ -179,8 +179,8 @@ are disabled when stdout is not a terminal, when `NO_COLOR` is set, or when
 
 Commands run as argv lists (never through a shell), so a `--repo` containing
 spaces or shell metacharacters cannot be injected. Hostname resolves via
-`/proc` → `$HOSTNAME` → `gethostname` → `unknown`; a rebuild with an unknown
-hostname aborts instead of using `#unknown`.
+`/proc` → `$HOSTNAME` → `gethostname`; if no source works, a run that includes
+`rebuild` aborts and asks for `--hostname` instead of building `#unknown`.
 
 zix auto-detects whether the installed `nixos-rebuild` is the classic
 shell script or the newer `-ng` rewrite and uses the compatible flags:

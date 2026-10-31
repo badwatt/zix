@@ -11,6 +11,7 @@ const process = @import("../core/process.zig");
 const ui_mod = @import("../core/ui.zig");
 const Config = @import("config.zig").Config;
 const Step = @import("config.zig").Step;
+const hostname_mod = @import("hostname.zig");
 
 /// Errors the workflow surfaces so `main` can pick an exit code.
 pub const Error = error{
@@ -41,6 +42,13 @@ pub const Deps = struct {
     err_writer: *std.Io.Writer,
     /// Environment variables (HOME / HOSTNAME).
     environ: *std.process.Environ.Map,
+    /// Resolves the OS hostname; injectable so tests can simulate a missing one.
+    resolve_hostname: *const fn (
+        std.Io,
+        std.mem.Allocator,
+        *std.process.Environ.Map,
+        *[std.posix.HOST_NAME_MAX]u8,
+    ) ?[]const u8 = hostname_mod.resolve,
 };
 
 /// Pre-built argv commands. Allocation happens in `buildCommands`; afterwards
@@ -51,7 +59,7 @@ pub const Commands = struct {
     git_rev_parse: [5][]const u8,
     git_add: [5][]const u8,
     nix_update: [5][]const u8,
-    nix_rebuild: cmd.Rebuild,
+    nix_rebuild: ?cmd.Rebuild,
     nix_keep: [6][]const u8,
     nix_gc: [4][]const u8,
     nix_diff: [5][]const u8,
@@ -64,10 +72,13 @@ pub fn buildCommands(
     allocator: std.mem.Allocator,
 ) !Commands {
     std.debug.assert(config.repo.len > 0);
-    std.debug.assert(config.hostname.len > 0);
+    if (config.hostname) |hostname| std.debug.assert(hostname.len > 0);
     std.debug.assert(config.keep > 0);
 
-    const flake = try cmd.formatFlake(allocator, config.repo, config.hostname);
+    const flake = if (config.hostname) |hostname|
+        try cmd.formatFlake(allocator, config.repo, hostname)
+    else
+        null;
     const max_jobs = if (config.jobs) |jobs| try cmd.formatCount(allocator, jobs) else null;
     const cores = if (config.cores) |value| try cmd.formatCount(allocator, value) else null;
 
@@ -77,7 +88,10 @@ pub fn buildCommands(
         .git_rev_parse = cmd.gitRevParse(config.repo),
         .git_add = cmd.gitAdd(config.repo),
         .nix_update = cmd.nixUpdate(config.repo),
-        .nix_rebuild = cmd.nixRebuild(flake, flavor, max_jobs, cores, config.show_trace),
+        .nix_rebuild = if (flake) |ref|
+            cmd.nixRebuild(ref, flavor, max_jobs, cores, config.show_trace)
+        else
+            null,
         .nix_keep = cmd.nixKeep(try cmd.formatKeep(allocator, config.keep)),
         .nix_gc = cmd.nixCollectGarbage(),
         .nix_diff = cmd.nixDiffClosures(),
@@ -100,7 +114,6 @@ pub fn execute(
     deps: Deps,
 ) anyerror!void {
     std.debug.assert(config.repo.len > 0);
-    std.debug.assert(config.hostname.len > 0);
 
     try deps.ui.title(writer, "ZIX Configuration");
     try deps.ui.config(writer, config);
@@ -115,7 +128,10 @@ pub fn execute(
     if (config.runs(.flake)) try flakeUpdate(io, writer, commands, deps);
 
     if (config.runs(.stage) and !try stage(io, writer, config, commands, deps)) return;
-    if (config.runs(.rebuild)) try rebuild(io, writer, commands, deps);
+    if (config.runs(.rebuild)) {
+        const argv = commands.nix_rebuild orelse unreachable;
+        try rebuild(io, writer, argv.slice(), deps);
+    }
     if (config.runs(.cleanup)) try cleanup(io, commands, deps);
 
     if (config.runs(.diff)) try showDiff(io, writer, commands, deps);
@@ -178,9 +194,9 @@ fn stage(
 }
 
 /// Rebuilds and switches the system.
-fn rebuild(io: std.Io, writer: *std.Io.Writer, commands: *const Commands, deps: Deps) anyerror!void {
+fn rebuild(io: std.Io, writer: *std.Io.Writer, argv: []const []const u8, deps: Deps) anyerror!void {
     try deps.ui.title(writer, "Nixos Rebuild");
-    const code = try deps.runner.run(io, commands.nix_rebuild.slice());
+    const code = try deps.runner.run(io, argv);
     if (code == 0) return;
     // 128 + N is the shell convention for a signal-terminated child. An
     // out-of-memory kill can arrive this way, so point at --jobs.
@@ -363,7 +379,7 @@ test "buildCommands populates every field" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const commands = try buildCommands(testConfig("host"), .ng, arena.allocator());
-    const rebuild_argv = commands.nix_rebuild.slice();
+    const rebuild_argv = commands.nix_rebuild.?.slice();
     try std.testing.expectEqualStrings("git", commands.git_pull[0]);
     try std.testing.expectEqualStrings("--porcelain", commands.git_status[4]);
     try std.testing.expectEqualStrings("--is-inside-work-tree", commands.git_rev_parse[4]);
@@ -377,6 +393,15 @@ test "buildCommands populates every field" {
     try std.testing.expectEqualStrings("diff-closures", commands.nix_diff[2]);
 }
 
+test "buildCommands omits the rebuild argv without a hostname" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var config = Config.defaults(null);
+    config.repo = "/repo";
+    const commands = try buildCommands(config, .ng, arena.allocator());
+    try std.testing.expect(commands.nix_rebuild == null);
+}
+
 test "buildCommands passes --max-jobs and --cores when set" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -384,7 +409,7 @@ test "buildCommands passes --max-jobs and --cores when set" {
     config.jobs = 4;
     config.cores = 6;
     const commands = try buildCommands(config, .ng, arena.allocator());
-    const rebuild_argv = commands.nix_rebuild.slice();
+    const rebuild_argv = commands.nix_rebuild.?.slice();
     try std.testing.expectEqualStrings("--max-jobs", rebuild_argv[4]);
     try std.testing.expectEqualStrings("4", rebuild_argv[5]);
     try std.testing.expectEqualStrings("--cores", rebuild_argv[6]);

@@ -10,7 +10,6 @@ const cli = @import("./cli.zig");
 const completions = @import("./completions.zig");
 const cmd = @import("../core/commands.zig");
 const dry_run = @import("../core/dry_run.zig");
-const hostname_mod = @import("./hostname.zig");
 const Config = @import("config.zig").Config;
 const Step = @import("config.zig").Step;
 const StaticAllocator = @import("../core/static_allocator.zig");
@@ -41,7 +40,7 @@ pub fn run(
     var deps_local = deps;
 
     var hostname_buf: [std.posix.HOST_NAME_MAX]u8 = undefined;
-    const resolved = hostname_mod.resolve(cli_io, allocator, deps.environ, &hostname_buf);
+    const resolved = deps.resolve_hostname(cli_io, allocator, deps.environ, &hostname_buf);
     var config = Config.defaults(resolved);
 
     const intent = parse(args, &config, deps.err_writer);
@@ -63,7 +62,7 @@ pub fn run(
     // Abort before any side effect (pull, flake update, staging) when the
     // rebuild is selected and the hostname could not be resolved. A run that
     // skips the rebuild (e.g. `--only diff`) does not need it.
-    if (config.runs(.rebuild) and std.mem.eql(u8, config.hostname, "unknown")) {
+    if (config.runs(.rebuild) and config.hostname == null) {
         return cli.Error.HostnameUnknown;
     }
 
@@ -393,7 +392,17 @@ const test_runner = cli.Deps{
     },
     .environ = undefined,
     .err_writer = undefined,
+    .resolve_hostname = noHostname,
 };
+
+fn noHostname(
+    _: std.Io,
+    _: std.mem.Allocator,
+    _: *std.process.Environ.Map,
+    _: *[std.posix.HOST_NAME_MAX]u8,
+) ?[]const u8 {
+    return null;
+}
 
 fn noopRun(_: ?*anyopaque, _: std.Io, _: []const []const u8) anyerror!i32 {
     commands_run += 1;
@@ -476,7 +485,7 @@ test "parse folds long value flags" {
         parseArgs(&.{ "zix", "--repo", "/r", "--hostname", "h", "--keep", "5" }, &config, &buf),
     );
     try std.testing.expectEqualStrings("/r", config.repo);
-    try std.testing.expectEqualStrings("h", config.hostname);
+    try std.testing.expectEqualStrings("h", config.hostname.?);
     try std.testing.expectEqual(@as(u8, 5), config.keep);
 }
 
@@ -488,7 +497,7 @@ test "parse folds short value flags" {
         parseArgs(&.{ "zix", "-r", "/r", "-n", "h", "-k", "3" }, &config, &buf),
     );
     try std.testing.expectEqualStrings("/r", config.repo);
-    try std.testing.expectEqualStrings("h", config.hostname);
+    try std.testing.expectEqualStrings("h", config.hostname.?);
     try std.testing.expectEqual(@as(u8, 3), config.keep);
 }
 
@@ -513,7 +522,7 @@ test "parse accepts inline long values" {
         }, &config, &buf),
     );
     try std.testing.expectEqualStrings("/r", config.repo);
-    try std.testing.expectEqualStrings("h", config.hostname);
+    try std.testing.expectEqualStrings("h", config.hostname.?);
     try std.testing.expectEqual(@as(u8, 5), config.keep);
     try std.testing.expectEqual(@as(?u16, 4), config.jobs);
     try std.testing.expectEqual(@as(?u16, 2), config.cores);
@@ -877,7 +886,7 @@ test "run with --only diff does not require a hostname" {
     try run(
         std.testing.io,
         &writer,
-        &.{ "zix", "--only", "diff", "--dry-run", "-y", "-n", "unknown" },
+        &.{ "zix", "--only", "diff", "--dry-run", "-y" },
         deps,
         &static_allocator,
     );
@@ -886,7 +895,7 @@ test "run with --only diff does not require a hostname" {
     try std.testing.expect(std.mem.indexOf(u8, &buf, "nixos-rebuild") == null);
 }
 
-test "run rejects unknown hostname before any command runs" {
+test "run rejects a missing hostname before any command runs" {
     var environ = std.process.Environ.Map.init(std.testing.allocator);
     defer environ.deinit();
     var ebuf: [1024]u8 = undefined;
@@ -903,7 +912,7 @@ test "run rejects unknown hostname before any command runs" {
     var writer = std.Io.Writer.fixed(&buf);
     try std.testing.expectError(
         cli.Error.HostnameUnknown,
-        run(std.testing.io, &writer, &.{ "zix", "-n", "unknown" }, deps, &static_allocator),
+        run(std.testing.io, &writer, &.{"zix"}, deps, &static_allocator),
     );
     try std.testing.expectEqual(@as(u32, 0), commands_run);
 }

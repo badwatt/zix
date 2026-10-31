@@ -1,20 +1,22 @@
-//! Hostname resolution: `/proc` → `$HOSTNAME` → `gethostname` → "unknown".
+//! Hostname resolution: `/proc` → `$HOSTNAME` → `gethostname`, or null.
 
 const std = @import("std");
 
 /// Linux procfs hostname path.
 pub const proc_path = "/proc/sys/kernel/hostname";
 
-/// Chooses the first non-empty candidate, falling back to `"unknown"`.
-pub fn choose(proc: ?[]const u8, env: ?[]const u8, cmd: []const u8) []const u8 {
+/// Chooses the first non-empty candidate, or null when every source is empty.
+pub fn choose(proc: ?[]const u8, env: ?[]const u8, cmd: ?[]const u8) ?[]const u8 {
     if (proc) |h| {
         if (h.len > 0) return h;
     }
     if (env) |h| {
         if (h.len > 0) return h;
     }
-    if (cmd.len > 0) return cmd;
-    return "unknown";
+    if (cmd) |h| {
+        if (h.len > 0) return h;
+    }
+    return null;
 }
 
 /// Resolves the hostname from the real environment.
@@ -23,11 +25,11 @@ pub fn resolve(
     allocator: std.mem.Allocator,
     environ: *std.process.Environ.Map,
     gethostname_buf: *[std.posix.HOST_NAME_MAX]u8,
-) []const u8 {
+) ?[]const u8 {
     const proc = readFileOrNull(io, allocator, proc_path);
     const env = environ.get("HOSTNAME");
     // `catch ""` keeps this branchless; `choose` treats empty as missing.
-    const cmd = std.posix.gethostname(gethostname_buf) catch "";
+    const cmd = std.posix.gethostname(gethostname_buf) catch null;
     return choose(proc, env, cmd);
 }
 
@@ -56,12 +58,13 @@ fn readFileOrNull(io: std.Io, allocator: std.mem.Allocator, path: []const u8) ?[
 // --- Tests ---
 
 test "choose prefers non-empty candidates in order" {
-    try std.testing.expectEqualStrings("proc", choose("proc", "env", "cmd"));
-    try std.testing.expectEqualStrings("env", choose(null, "env", "cmd"));
-    try std.testing.expectEqualStrings("env", choose("", "env", "cmd"));
-    try std.testing.expectEqualStrings("cmd", choose(null, null, "cmd"));
-    try std.testing.expectEqualStrings("cmd", choose(null, "", "cmd"));
-    try std.testing.expectEqualStrings("unknown", choose(null, null, ""));
+    try std.testing.expectEqualStrings("proc", choose("proc", "env", "cmd").?);
+    try std.testing.expectEqualStrings("env", choose(null, "env", "cmd").?);
+    try std.testing.expectEqualStrings("env", choose("", "env", "cmd").?);
+    try std.testing.expectEqualStrings("cmd", choose(null, null, "cmd").?);
+    try std.testing.expectEqualStrings("cmd", choose(null, "", "cmd").?);
+    try std.testing.expect(choose(null, null, null) == null);
+    try std.testing.expect(choose("", "", "") == null);
 }
 
 test "readFileOrNull reads, rejects empty, and rejects missing" {
@@ -89,5 +92,6 @@ test "resolve produces a non-empty hostname" {
 
     var buf: [std.posix.HOST_NAME_MAX]u8 = undefined;
     const hostname = resolve(std.testing.io, arena.allocator(), &environ, &buf);
-    try std.testing.expect(hostname.len > 0);
+    try std.testing.expect(hostname != null);
+    try std.testing.expect(hostname.?.len > 0);
 }

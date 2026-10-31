@@ -160,6 +160,15 @@ test "only diff works without a detected hostname" {
     try std.testing.expect(std.mem.indexOf(u8, result.stdout, "diff-closures") != null);
 }
 
+test "an explicit hostname is used verbatim" {
+    const result = try run(&.{
+        "--dry-run", "-y", "-n", "unknown", "-r", "/tmp", "--only", "rebuild",
+    });
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(i32, 0), result.code());
+    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "/tmp#unknown") != null);
+}
+
 test "jobs and cores flags flow into the rebuild command" {
     const result = try run(&.{
         "--dry-run", "-y", "-n", "testhost", "-r", "/tmp", "-j", "4", "-c", "6",
@@ -176,13 +185,6 @@ test "no-color flag is accepted and keeps help plain" {
     try std.testing.expectEqual(@as(i32, 0), result.code());
     try std.testing.expect(std.mem.indexOf(u8, result.stdout, "ZIX") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.stdout, "\x1b[") == null);
-}
-
-test "unknown hostname aborts before rebuild" {
-    const result = try run(&.{ "--dry-run", "-y", "-n", "unknown", "-r", "/tmp" });
-    defer result.deinit(std.testing.allocator);
-    try std.testing.expectEqual(@as(i32, 1), result.code());
-    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "hostname") != null);
 }
 
 test "completions flag prints a script for every shell" {
