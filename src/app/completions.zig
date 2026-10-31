@@ -95,7 +95,7 @@ const zsh =
     \\        '(-y --yes)'{-y,--yes}'[assume yes for all prompts]' \
     \\        '--only[run only these steps]:steps:(pull flake stage rebuild cleanup diff)' \
     \\        '--dry-run[print commands without executing them]' \
-    \\        '--no-color[disable colored output]' \\
+    \\        '--no-color[disable colored output]' \
     \\        '--show-trace[pass --show-trace to nixos-rebuild]' \
     \\        '--completions[print shell completions]:shell:(bash zsh fish)' \
     \\        '(-h --help)'{-h,--help}'[print help]' \
@@ -156,6 +156,13 @@ test "scripts complete the binary and their own arguments" {
     try std.testing.expect(std.mem.indexOf(u8, script(.bash), "complete -F _zix zix") != null);
     try std.testing.expect(std.mem.indexOf(u8, script(.zsh), "#compdef zix") != null);
     try std.testing.expect(std.mem.indexOf(u8, script(.fish), "complete -c zix") != null);
+}
+
+test "zsh script has no doubled line continuations" {
+    var lines = std.mem.splitScalar(u8, zsh, '\n');
+    while (lines.next()) |line| {
+        try std.testing.expect(!std.mem.endsWith(u8, line, "\\\\"));
+    }
 }
 
 test "print writes the exact script" {
