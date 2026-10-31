@@ -56,6 +56,8 @@ pub const Config = struct {
     yes: bool,
     /// Print commands instead of executing them.
     dry_run: bool,
+    /// Pass `--show-trace` to `nixos-rebuild` for verbose error traces.
+    show_trace: bool = false,
     /// Explicit step selection (`--only`), or null for the default pipeline.
     only: ?std.EnumSet(Step) = null,
 

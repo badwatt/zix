@@ -77,7 +77,7 @@ pub fn buildCommands(
         .git_rev_parse = cmd.gitRevParse(config.repo),
         .git_add = cmd.gitAdd(config.repo),
         .nix_update = cmd.nixUpdate(config.repo),
-        .nix_rebuild = cmd.nixRebuild(flake, flavor, max_jobs, cores),
+        .nix_rebuild = cmd.nixRebuild(flake, flavor, max_jobs, cores, config.show_trace),
         .nix_keep = cmd.nixKeep(try cmd.formatKeep(allocator, config.keep)),
         .nix_gc = cmd.nixCollectGarbage(),
         .nix_diff = cmd.nixDiffClosures(),

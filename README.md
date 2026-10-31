@@ -129,6 +129,7 @@ Autodoc uses `///` (declarations) and `//!` (module-level) comments. No doc comm
      --dry-run     : print commands without executing them
      --no-color    : disable colored output
      --only        : run only these steps (pull,flake,stage,rebuild,cleanup,diff)
+     --show-trace  : pass --show-trace to nixos-rebuild
      --completions : print shell completions (bash,zsh,fish)
  -h, --help        : Display this help message
  -v, --version     : Display the current version

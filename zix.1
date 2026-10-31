@@ -65,6 +65,10 @@ installed.
 Disable ANSI colours. Colours are also disabled when \fBNO_COLOR\fR is set or
 the stream is not a terminal.
 .TP
+.B \-\-show\-trace
+Pass \fB\-\-show\-trace\fR to \fBnixos\-rebuild\fR. Useful when a rebuild
+fails; it is off by default to keep evaluation fast and output quiet.
+.TP
 .BI \-\-completions " " \fISHELL\fR
 Print the completion script for \fISHELL\fR (\fBbash\fR, \fBzsh\fR or
 \fBfish\fR) to standard output and exit.

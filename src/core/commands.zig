@@ -81,6 +81,7 @@ pub fn nixRebuild(
     flavor: RebuildFlavor,
     max_jobs: ?[]const u8,
     cores: ?[]const u8,
+    show_trace: bool,
 ) Rebuild {
     std.debug.assert(flake.len > 0);
     if (max_jobs) |jobs| std.debug.assert(jobs.len > 0);
@@ -111,7 +112,7 @@ pub fn nixRebuild(
     }
     argv.push("--flake");
     argv.push(flake);
-    argv.push("--show-trace");
+    if (show_trace) argv.push("--show-trace");
     return argv;
 }
 
@@ -229,7 +230,7 @@ test "nix commands use argv, not shell" {
 }
 
 test "nixRebuild reflects flavor" {
-    const ng = nixRebuild("/repo#host", .ng, null, null);
+    const ng = nixRebuild("/repo#host", .ng, null, null, true);
     try expectArgv(
         &.{
             "nixos-rebuild",
@@ -242,7 +243,7 @@ test "nixRebuild reflects flavor" {
         },
         ng.slice(),
     );
-    const classic = nixRebuild("/repo#host", .classic, null, null);
+    const classic = nixRebuild("/repo#host", .classic, null, null, true);
     try expectArgv(
         &.{
             "sudo",
@@ -257,8 +258,23 @@ test "nixRebuild reflects flavor" {
     );
 }
 
+test "nixRebuild omits --show-trace unless requested" {
+    const ng = nixRebuild("/repo#host", .ng, null, null, false);
+    try expectArgv(
+        &.{
+            "nixos-rebuild",
+            "switch",
+            "--elevate=sudo",
+            "--no-reexec",
+            "--flake",
+            "/repo#host",
+        },
+        ng.slice(),
+    );
+}
+
 test "nixRebuild includes --cores when requested" {
-    const with_cores = nixRebuild("/repo#host", .ng, null, "6");
+    const with_cores = nixRebuild("/repo#host", .ng, null, "6", true);
     try expectArgv(
         &.{
             "nixos-rebuild",
@@ -273,7 +289,7 @@ test "nixRebuild includes --cores when requested" {
         },
         with_cores.slice(),
     );
-    const both = nixRebuild("/repo#host", .classic, "2", "4");
+    const both = nixRebuild("/repo#host", .classic, "2", "4", true);
     try expectArgv(
         &.{
             "sudo",
@@ -293,7 +309,7 @@ test "nixRebuild includes --cores when requested" {
 }
 
 test "nixRebuild includes --max-jobs when requested" {
-    const ng = nixRebuild("/repo#host", .ng, "4", null);
+    const ng = nixRebuild("/repo#host", .ng, "4", null, true);
     try expectArgv(
         &.{
             "nixos-rebuild",
@@ -308,7 +324,7 @@ test "nixRebuild includes --max-jobs when requested" {
         },
         ng.slice(),
     );
-    const classic = nixRebuild("/repo#host", .classic, "2", null);
+    const classic = nixRebuild("/repo#host", .classic, "2", null, true);
     try expectArgv(
         &.{
             "sudo",

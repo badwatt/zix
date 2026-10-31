@@ -128,6 +128,22 @@ test "only flag runs the selected steps" {
     try std.testing.expect(std.mem.indexOf(u8, result.stdout, "nixos-rebuild") == null);
 }
 
+test "show-trace is opt-in" {
+    const plain = try run(&.{
+        "--dry-run", "-y", "-n", "testhost", "-r", "/tmp", "--only", "rebuild",
+    });
+    defer plain.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(i32, 0), plain.code());
+    try std.testing.expect(std.mem.indexOf(u8, plain.stdout, "--show-trace") == null);
+
+    const traced = try run(&.{
+        "--dry-run", "-y", "-n", "testhost", "-r", "/tmp", "--only", "rebuild", "--show-trace",
+    });
+    defer traced.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(i32, 0), traced.code());
+    try std.testing.expect(std.mem.indexOf(u8, traced.stdout, "--show-trace") != null);
+}
+
 test "unknown only step exits with code 2" {
     const result = try run(&.{ "--only", "nope" });
     defer result.deinit(std.testing.allocator);

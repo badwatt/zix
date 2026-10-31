@@ -97,7 +97,7 @@ const ParseStep = union(enum) {
 };
 
 /// Long flags that take no value.
-const BoolFlag = enum { help, version, update, diff, yes, @"dry-run", @"no-color" };
+const BoolFlag = enum { help, version, update, diff, yes, @"dry-run", @"no-color", @"show-trace" };
 
 /// Matches `name` against `--<tag>` for every field of enum `E`.
 fn fromLongName(comptime E: type, name: []const u8) ?E {
@@ -179,6 +179,7 @@ fn parseLong(
             .yes => config.yes = true,
             .@"dry-run" => config.dry_run = true,
             .@"no-color" => {},
+            .@"show-trace" => config.show_trace = true,
         }
         return .{ .consumed = 0 };
     }
@@ -458,12 +459,13 @@ test "parse folds boolean flags" {
     var config = testConfig();
     try std.testing.expectEqual(
         intent_run,
-        parseArgs(&.{ "zix", "-duy", "--update", "--dry-run", "--diff", "--yes", "--no-color" }, &config, &buf),
+        parseArgs(&.{ "zix", "-duy", "--update", "--dry-run", "--diff", "--yes", "--no-color", "--show-trace" }, &config, &buf),
     );
     try std.testing.expect(config.update);
     try std.testing.expect(config.diff);
     try std.testing.expect(config.yes);
     try std.testing.expect(config.dry_run);
+    try std.testing.expect(config.show_trace);
 }
 
 test "parse folds long value flags" {

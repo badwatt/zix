@@ -17,9 +17,9 @@ pub const names = "bash,zsh,fish";
 /// Every long option the parser accepts. Tests use this list to keep the
 /// scripts from drifting behind the CLI.
 pub const long_options = [_][]const u8{
-    "--repo",     "--hostname",    "--keep", "--jobs",    "--cores",
-    "--update",   "--diff",        "--yes",  "--only",    "--dry-run",
-    "--no-color", "--completions", "--help", "--version",
+    "--repo",     "--hostname",   "--keep",        "--jobs", "--cores",
+    "--update",   "--diff",       "--yes",         "--only", "--dry-run",
+    "--no-color", "--show-trace", "--completions", "--help", "--version",
 };
 
 /// CLI name of the shell.
@@ -54,7 +54,7 @@ const bash =
     \\    local cur words
     \\    cur="${COMP_WORDS[COMP_CWORD]}"
     \\    words="--repo --hostname --keep --jobs --cores --update --diff --yes \
-    \\--only --dry-run --no-color --completions --help --version help version \
+    \\--only --dry-run --no-color --show-trace --completions --help --version help version \
     \\-r -n -k -j -c -u -d -y -h -v"
     \\
     \\    case "${COMP_WORDS[COMP_CWORD-1]}" in
@@ -95,7 +95,8 @@ const zsh =
     \\        '(-y --yes)'{-y,--yes}'[assume yes for all prompts]' \
     \\        '--only[run only these steps]:steps:(pull flake stage rebuild cleanup diff)' \
     \\        '--dry-run[print commands without executing them]' \
-    \\        '--no-color[disable colored output]' \
+    \\        '--no-color[disable colored output]' \\
+    \\        '--show-trace[pass --show-trace to nixos-rebuild]' \
     \\        '--completions[print shell completions]:shell:(bash zsh fish)' \
     \\        '(-h --help)'{-h,--help}'[print help]' \
     \\        '(-v --version)'{-v,--version}'[print the version]' \
@@ -120,6 +121,7 @@ const fish =
     \\complete -c zix -l only -d 'run only these steps' -r -f -a "pull flake stage rebuild cleanup diff"
     \\complete -c zix -l dry-run -d 'print commands without executing them'
     \\complete -c zix -l no-color -d 'disable colored output'
+    \\complete -c zix -l show-trace -d 'pass --show-trace to nixos-rebuild'
     \\complete -c zix -l completions -d 'print shell completions' -r -f -a "bash zsh fish"
     \\complete -c zix -s h -l help -d 'print help'
     \\complete -c zix -s v -l version -d 'print the version'
