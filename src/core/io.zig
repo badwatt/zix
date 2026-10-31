@@ -74,10 +74,28 @@ pub fn noColorRequested(args: []const []const u8) bool {
 /// emitted. Set once at startup from `controlSupported`; tests may toggle it.
 pub var control_enabled: bool = false;
 
-/// Progress lifecycle bookkeeping so pause/resume only act while a run is
-/// actually in progress.
-const ProgressState = enum { inactive, running, paused };
-var progress_state: ProgressState = .inactive;
+/// Whether to run the background keep-alive that refreshes the progress state.
+/// Ghostty resets a stale progress bar after ~15 seconds, so long commands need
+/// a periodic update. Enabled together with `control_enabled` in `main`.
+pub var keepalive_enabled: bool = false;
+
+/// Io and file used by the keep-alive thread. `main` points the file at stdout.
+pub var control_io: std.Io = undefined;
+pub var control_file: std.Io.File = undefined;
+
+/// Time between keep-alive refreshes. Ghostty recommends at least one per
+/// second; a shorter interval also shortens the join on stop.
+var keepalive_interval_ms: i32 = 500;
+
+const progress_running = "\x1b]9;4;3;0\x1b\\";
+const progress_paused = "\x1b]9;4;4\x1b\\";
+const progress_clear = "\x1b]9;4;0;0\x1b\\";
+
+var progress_active: bool = false;
+var keepalive_thread: ?std.Thread = null;
+var keepalive_stop = std.atomic.Value(bool).init(true);
+var keepalive_paused = std.atomic.Value(bool).init(false);
+var keepalive_ticks = std.atomic.Value(usize).init(0);
 
 /// True when stdout can receive terminal control sequences: it is a TTY and
 /// `TERM` is not `dumb`. `NO_COLOR` only affects colors, not progress.
@@ -94,32 +112,64 @@ fn writeControl(writer: *std.Io.Writer, seq: []const u8) void {
     writer.flush() catch {};
 }
 
-/// Shows an indeterminate progress bar (OSC 9;4;3).
+/// Background refresher: Ghostty forgets a progress state after ~15s without
+/// an update, so re-emit the current state while the run is active.
+fn keepAlive() void {
+    var no_fds: [0]std.posix.pollfd = .{};
+    while (!keepalive_stop.load(.acquire)) {
+        _ = std.posix.poll(&no_fds, keepalive_interval_ms) catch {};
+        if (keepalive_stop.load(.acquire)) break;
+        const seq = if (keepalive_paused.load(.acquire))
+            progress_paused
+        else
+            progress_running;
+        control_file.writeStreamingAll(control_io, seq) catch {};
+        _ = keepalive_ticks.fetchAdd(1, .monotonic);
+    }
+}
+
+/// Shows an indeterminate progress bar (OSC 9;4;3) and starts the keep-alive.
 pub fn progressStart(writer: *std.Io.Writer) void {
     if (!control_enabled) return;
-    progress_state = .running;
-    writeControl(writer, "\x1b]9;4;3;0\x1b\\");
+    if (progress_active) {
+        keepalive_paused.store(false, .release);
+        writeControl(writer, progress_running);
+        return;
+    }
+
+    progress_active = true;
+    keepalive_paused.store(false, .release);
+    writeControl(writer, progress_running);
+
+    if (!keepalive_enabled or keepalive_thread != null) return;
+    keepalive_stop.store(false, .release);
+    keepalive_thread = std.Thread.spawn(.{}, keepAlive, .{}) catch null;
 }
 
 /// Pauses the progress bar while waiting for the user (OSC 9;4;4).
 pub fn progressPause(writer: *std.Io.Writer) void {
-    if (!control_enabled or progress_state != .running) return;
-    progress_state = .paused;
-    writeControl(writer, "\x1b]9;4;4\x1b\\");
+    if (!control_enabled or !progress_active or keepalive_paused.load(.acquire)) return;
+    keepalive_paused.store(true, .release);
+    writeControl(writer, progress_paused);
 }
 
 /// Resumes a paused progress bar (OSC 9;4;3).
 pub fn progressResume(writer: *std.Io.Writer) void {
-    if (!control_enabled or progress_state != .paused) return;
-    progress_state = .running;
-    writeControl(writer, "\x1b]9;4;3;0\x1b\\");
+    if (!control_enabled or !progress_active or !keepalive_paused.load(.acquire)) return;
+    keepalive_paused.store(false, .release);
+    writeControl(writer, progress_running);
 }
 
-/// Clears the progress bar (OSC 9;4;0). Idempotent.
+/// Clears the progress bar (OSC 9;4;0) and stops the keep-alive.
 pub fn progressStop(writer: *std.Io.Writer) void {
-    if (!control_enabled or progress_state == .inactive) return;
-    progress_state = .inactive;
-    writeControl(writer, "\x1b]9;4;0;0\x1b\\");
+    if (!progress_active) return;
+    progress_active = false;
+    keepalive_stop.store(true, .release);
+    if (keepalive_thread) |thread| {
+        thread.join();
+        keepalive_thread = null;
+    }
+    if (control_enabled) writeControl(writer, progress_clear);
 }
 
 /// Emits a desktop notification (OSC 9) and rings the bell so the user looks
@@ -197,10 +247,11 @@ test "noColorRequested scans every argument" {
 
 test "progress sequences follow the lifecycle" {
     control_enabled = true;
-    progress_state = .inactive;
+    keepalive_enabled = false;
+    progress_active = false;
     defer {
         control_enabled = false;
-        progress_state = .inactive;
+        progress_active = false;
     }
 
     var buf: [512]u8 = undefined;
@@ -215,12 +266,31 @@ test "progress sequences follow the lifecycle" {
     try std.testing.expect(std.mem.indexOf(u8, out, "\x1b]9;4;0") != null);
 }
 
-test "progress pause and resume are no-ops outside their state" {
+test "progressStart while active refreshes without a second thread" {
     control_enabled = true;
-    progress_state = .inactive;
+    keepalive_enabled = false;
+    progress_active = false;
     defer {
         control_enabled = false;
-        progress_state = .inactive;
+        progress_active = false;
+    }
+
+    var buf: [256]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    progressStart(&writer);
+    const first = writer.end;
+    progressStart(&writer);
+    try std.testing.expect(writer.end > first);
+    progressStop(&writer);
+}
+
+test "progress pause and resume are no-ops outside their state" {
+    control_enabled = true;
+    keepalive_enabled = false;
+    progress_active = false;
+    defer {
+        control_enabled = false;
+        progress_active = false;
     }
 
     var buf: [512]u8 = undefined;
@@ -247,6 +317,7 @@ test "progress pause and resume are no-ops outside their state" {
 
 test "terminal control is silent when disabled" {
     control_enabled = false;
+    progress_active = false;
     var buf: [128]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buf);
     progressStart(&writer);
@@ -267,6 +338,36 @@ test "notify writes an OSC 9 notification and a bell" {
     const out = buf[0..writer.end];
     try std.testing.expect(std.mem.indexOf(u8, out, "\x1b]9;zix: done\x1b\\") != null);
     try std.testing.expectEqual(@as(u8, '\x07'), out[out.len - 1]);
+}
+
+test "progress keep-alive refreshes the state" {
+    control_enabled = true;
+    keepalive_enabled = true;
+    keepalive_interval_ms = 10;
+    progress_active = false;
+    control_io = std.testing.io;
+    const devnull = try std.Io.Dir.cwd().openFile(std.testing.io, "/dev/null", .{ .mode = .write_only });
+    control_file = devnull;
+    keepalive_ticks.store(0, .release);
+
+    var buf: [128]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    progressStart(&writer);
+    defer {
+        progressStop(&writer);
+        devnull.close(std.testing.io);
+        control_enabled = false;
+        keepalive_enabled = false;
+        keepalive_interval_ms = 500;
+        progress_active = false;
+        control_file = undefined;
+        control_io = undefined;
+    }
+
+    // Give the keep-alive thread time to refresh once.
+    var no_fds: [0]std.posix.pollfd = .{};
+    _ = std.posix.poll(&no_fds, 30) catch {};
+    try std.testing.expect(keepalive_ticks.load(.acquire) > 0);
 }
 
 test "controlSupported honors TERM=dumb" {
