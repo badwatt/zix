@@ -86,6 +86,15 @@ Without \fB\-\-only\fR the pipeline is: \fBpull\fR, \fBflake\fR (only with
 \fB\-\-update\fR), \fBstage\fR, \fBrebuild\fR, \fBcleanup\fR and \fBdiff\fR
 (only with \fB\-\-diff\fR). Declining the staging prompt aborts the run. A
 closed stdin is never treated as a confirmation.
+.SH TERMINAL FEEDBACK
+When standard output is a terminal and \fBTERM\fR is not \fBdumb\fR,
+\fBzix\fR reports an indeterminate progress bar with the \fBOSC 9;4\fR
+sequence (supported by Ghostty, iTerm2 and WezTerm), pauses it while a prompt
+waits, and clears it when the run ends. It also emits a desktop notification
+(\fBOSC 9\fR) and a bell when a confirmation is needed, when \fBsudo\fR may
+ask for a password, and when the run finishes, fails or is aborted.
+Redirecting standard output disables these sequences. \fBNO_COLOR\fR only
+affects colours.
 .SH EXIT STATUS
 .TP
 .B 0

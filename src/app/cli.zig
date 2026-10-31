@@ -12,6 +12,7 @@ const ui_mod = @import("../core/ui.zig");
 const Config = @import("config.zig").Config;
 const Step = @import("config.zig").Step;
 const hostname_mod = @import("hostname.zig");
+const io_mod = @import("../core/io.zig");
 
 /// Errors the workflow surfaces so `main` can pick an exit code.
 pub const Error = error{
@@ -120,21 +121,45 @@ pub fn execute(
 
     if (!config.yes and !(try deps.ui.confirm(writer, true, null))) {
         try deps.ui.output(writer, "Aborted.\n");
+        io_mod.notify(writer, "zix: aborted");
         return;
+    }
+
+    io_mod.progressStart(writer);
+    defer io_mod.progressStop(writer);
+    errdefer {
+        io_mod.progressStop(writer);
+        io_mod.notify(writer, "zix: failed");
     }
 
     if (config.runs(.pull)) try pull(io, writer, commands, deps);
 
     if (config.runs(.flake)) try flakeUpdate(io, writer, commands, deps);
 
-    if (config.runs(.stage) and !try stage(io, writer, config, commands, deps)) return;
+    if (config.runs(.stage) and !try stage(io, writer, config, commands, deps)) {
+        io_mod.notify(writer, "zix: aborted");
+        return;
+    }
     if (config.runs(.rebuild)) {
+        if (!config.dry_run and sudoNeedsPassword(io, deps)) {
+            io_mod.notify(writer, "zix: sudo may ask for your password");
+        }
         const argv = commands.nix_rebuild orelse unreachable;
         try rebuild(io, writer, argv.slice(), deps);
     }
     if (config.runs(.cleanup)) try cleanup(io, commands, deps);
 
     if (config.runs(.diff)) try showDiff(io, writer, commands, deps);
+
+    io_mod.progressStop(writer);
+    io_mod.notify(writer, "zix: finished");
+}
+
+/// True when sudo would have to ask for a password. Read-only and
+/// non-interactive; probe errors mean "cannot tell", so stay quiet.
+fn sudoNeedsPassword(io: std.Io, deps: Deps) bool {
+    const code = deps.runner.probe(io, &.{ "sudo", "-n", "true" }) catch return false;
+    return code != 0;
 }
 
 /// Verifies the repo is a git work tree, then pulls.
@@ -267,6 +292,8 @@ var capture_output: []const u8 = "";
 var capture_stderr: []const u8 = "";
 var probe_result: i32 = 0;
 var probe_error: bool = false;
+var probe_needle: ?[]const u8 = null;
+var probe_needle_code: i32 = 0;
 var confirm_count: u32 = 0;
 var confirm_false_at: u32 = 0;
 var last_success: []const u8 = "";
@@ -292,6 +319,8 @@ fn resetMocks() void {
     capture_stderr = "";
     probe_result = 0;
     probe_error = false;
+    probe_needle = null;
+    probe_needle_code = 0;
     confirm_count = 0;
     confirm_false_at = 0;
     last_success = "";
@@ -329,7 +358,10 @@ fn mockCapture(
     return .{ .code = code, .stdout = out, .stderr = err };
 }
 
-fn mockProbe(_: ?*anyopaque, _: std.Io, _: process.Runner.Command) anyerror!i32 {
+fn mockProbe(_: ?*anyopaque, _: std.Io, argv: process.Runner.Command) anyerror!i32 {
+    if (probe_needle) |needle| {
+        if (hasArg(argv, needle)) return probe_needle_code;
+    }
     if (probe_error) return error.MockError;
     return probe_result;
 }
@@ -462,6 +494,8 @@ test "execute happy path needs no confirmations when yes" {
     var environ = std.process.Environ.Map.init(std.testing.allocator);
     defer environ.deinit();
     resetMocks();
+    io_mod.control_enabled = true;
+    defer io_mod.control_enabled = false;
 
     var config = testConfig("host");
     config.yes = true;
@@ -471,6 +505,10 @@ test "execute happy path needs no confirmations when yes" {
     var writer = std.Io.Writer.fixed(&buf);
     try execute(std.testing.io, &writer, config, &commands, testDeps(arena.allocator(), &environ));
     try std.testing.expectEqual(@as(u32, 0), confirm_count);
+    const out = buf[0..writer.end];
+    try std.testing.expect(std.mem.indexOf(u8, out, "\x1b]9;4;3") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\x1b]9;4;0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "zix: finished") != null);
 }
 
 test "execute frees every captured buffer" {
@@ -500,6 +538,8 @@ test "execute aborts when initial confirmation is declined" {
     defer environ.deinit();
     resetMocks();
     confirm_false_at = 1;
+    io_mod.control_enabled = true;
+    defer io_mod.control_enabled = false;
 
     const config = testConfig("host");
     const commands = try buildCommands(config, .ng, arena.allocator());
@@ -508,6 +548,7 @@ test "execute aborts when initial confirmation is declined" {
     try execute(std.testing.io, &writer, config, &commands, testDeps(arena.allocator(), &environ));
     try std.testing.expectEqual(@as(u32, 1), confirm_count);
     try std.testing.expectEqualStrings("Aborted.\n", last_output);
+    try std.testing.expect(std.mem.indexOf(u8, buf[0..writer.end], "zix: aborted") != null);
 }
 
 test "execute fails when repo is not a git work tree" {
@@ -536,6 +577,8 @@ test "execute fails when git pull fails" {
     defer environ.deinit();
     resetMocks();
     fail_needle = "pull";
+    io_mod.control_enabled = true;
+    defer io_mod.control_enabled = false;
 
     var config = testConfig("host");
     config.yes = true;
@@ -546,6 +589,7 @@ test "execute fails when git pull fails" {
         Error.GitPullFailed,
         execute(std.testing.io, &writer, config, &commands, testDeps(arena.allocator(), &environ)),
     );
+    try std.testing.expect(std.mem.indexOf(u8, buf[0..writer.end], "zix: failed") != null);
 }
 
 test "execute fails when flake update fails" {
@@ -607,6 +651,28 @@ test "execute stages changes when confirmed" {
     try std.testing.expectEqualStrings("Changes added to git stage successfully", last_success);
 }
 
+test "execute notifies when sudo may ask for a password" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var environ = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ.deinit();
+    resetMocks();
+    probe_needle = "sudo";
+    probe_needle_code = 1;
+    io_mod.control_enabled = true;
+    defer io_mod.control_enabled = false;
+
+    var config = testConfig("host");
+    config.yes = true;
+    const commands = try buildCommands(config, .ng, arena.allocator());
+    var buf: [1024]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    try execute(std.testing.io, &writer, config, &commands, testDeps(arena.allocator(), &environ));
+    try std.testing.expect(
+        std.mem.indexOf(u8, buf[0..writer.end], "zix: sudo may ask for your password") != null,
+    );
+}
+
 test "execute aborts when staging changes is declined" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -616,6 +682,8 @@ test "execute aborts when staging changes is declined" {
     capture_output = " M file\n";
     confirm_false_at = 2; // initial prompt yes, staging prompt no.
     fail_needle = "switch"; // the rebuild must not run
+    io_mod.control_enabled = true;
+    defer io_mod.control_enabled = false;
 
     var config = testConfig("host");
     config.diff = true; // neither must the diff
@@ -625,6 +693,7 @@ test "execute aborts when staging changes is declined" {
     try execute(std.testing.io, &writer, config, &commands, testDeps(arena.allocator(), &environ));
     try std.testing.expectEqual(@as(u32, 2), confirm_count);
     try std.testing.expectEqualStrings("Changes not added to stage; aborting.\n", last_output);
+    try std.testing.expect(std.mem.indexOf(u8, buf[0..writer.end], "zix: aborted") != null);
 }
 
 test "execute fails when git add fails" {

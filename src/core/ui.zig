@@ -176,6 +176,10 @@ pub fn confirm(
 ) !bool {
     if (msg) |value| std.debug.assert(value.len > 0);
 
+    io.progressPause(writer);
+    defer io.progressResume(writer);
+    if (msg != null) io.notify(writer, "zix: waiting for confirmation");
+
     try writeConfirmPrompt(writer, default_value, msg);
 
     var buf: [256]u8 = undefined;
@@ -254,6 +258,10 @@ fn confirmAlloc(
     msg: ?[]const u8,
 ) !bool {
     if (msg) |value| std.debug.assert(value.len > 0);
+
+    io.progressPause(writer);
+    defer io.progressResume(writer);
+    if (msg != null) io.notify(writer, "zix: waiting for confirmation");
 
     try writeConfirmPrompt(writer, default_value, msg);
 
@@ -529,6 +537,24 @@ test "confirm responses" {
         );
         try std.testing.expectEqual(tc.expected, result);
     }
+}
+
+test "confirm pauses progress and notifies when a message is given" {
+    io.control_enabled = true;
+    var buf: [1024]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    io.progressStart(&writer);
+    defer {
+        io.progressStop(&writer);
+        io.control_enabled = false;
+    }
+
+    var reader = std.Io.Reader.fixed("y\n");
+    try std.testing.expect(try confirmAlloc(&reader, &writer, true, "Sure?"));
+    const out = buf[0..writer.end];
+    try std.testing.expect(std.mem.indexOf(u8, out, "\x1b]9;4;4") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "zix: waiting for confirmation") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\x1b]9;4;3") != null);
 }
 
 test "confirm empty input hits EndOfStream" {

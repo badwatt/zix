@@ -49,6 +49,7 @@ pub fn main(init: std.process.Init) !u8 {
         io_mod.colorSupported(io, init.environ_map, std.Io.File.stdout());
     io_mod.err_color_enabled = !no_color and
         io_mod.colorSupported(io, init.environ_map, std.Io.File.stderr());
+    io_mod.control_enabled = io_mod.controlSupported(io, init.environ_map);
 
     // Dependency injection: command execution, user I/O, scratch allocator,
     // and environment all flow through Deps for testability.

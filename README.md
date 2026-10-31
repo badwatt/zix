@@ -171,6 +171,17 @@ them where each shell looks by default: `share/zsh/site-functions/_zix`,
 `share/bash-completion/completions/zix`. A profile install (or
 `home.packages`) is therefore enough, no manual copy.
 
+### Terminal feedback
+
+When stdout is a terminal, zix reports an indeterminate progress bar through
+**OSC 9;4** (Ghostty, iTerm2, WezTerm, …), pauses it while waiting for an
+answer, and clears it when the run ends. It also sends a desktop notification
+(**OSC 9**) and a bell when a confirmation is needed, when `sudo` may ask for
+a password, and when the run finishes, fails or is aborted.
+
+Redirecting stdout or setting `TERM=dumb` disables these control sequences.
+`NO_COLOR` only affects colors, not progress or notifications.
+
 Exit codes: `0` success, `1` runtime failure, `2` invalid arguments or config,
 `141` when stdout is closed early (SIGPIPE convention, e.g. `zix | head`).
 Diagnostics go to stderr; stdout carries only the normal report. ANSI colors

@@ -68,6 +68,71 @@ pub fn noColorRequested(args: []const []const u8) bool {
     return false;
 }
 
+// --- Terminal control ---
+
+/// Whether terminal control sequences (progress and notifications) are
+/// emitted. Set once at startup from `controlSupported`; tests may toggle it.
+pub var control_enabled: bool = false;
+
+/// Progress lifecycle bookkeeping so pause/resume only act while a run is
+/// actually in progress.
+const ProgressState = enum { inactive, running, paused };
+var progress_state: ProgressState = .inactive;
+
+/// True when stdout can receive terminal control sequences: it is a TTY and
+/// `TERM` is not `dumb`. `NO_COLOR` only affects colors, not progress.
+pub fn controlSupported(io: std.Io, environ: *std.process.Environ.Map) bool {
+    if (environ.get("TERM")) |term| {
+        if (std.mem.eql(u8, term, "dumb")) return false;
+    }
+    return std.Io.File.stdout().isTty(io) catch false;
+}
+
+/// Writes `seq` and flushes; control sequences are best-effort.
+fn writeControl(writer: *std.Io.Writer, seq: []const u8) void {
+    writer.writeAll(seq) catch return;
+    writer.flush() catch {};
+}
+
+/// Shows an indeterminate progress bar (OSC 9;4;3).
+pub fn progressStart(writer: *std.Io.Writer) void {
+    if (!control_enabled) return;
+    progress_state = .running;
+    writeControl(writer, "\x1b]9;4;3;0\x1b\\");
+}
+
+/// Pauses the progress bar while waiting for the user (OSC 9;4;4).
+pub fn progressPause(writer: *std.Io.Writer) void {
+    if (!control_enabled or progress_state != .running) return;
+    progress_state = .paused;
+    writeControl(writer, "\x1b]9;4;4\x1b\\");
+}
+
+/// Resumes a paused progress bar (OSC 9;4;3).
+pub fn progressResume(writer: *std.Io.Writer) void {
+    if (!control_enabled or progress_state != .paused) return;
+    progress_state = .running;
+    writeControl(writer, "\x1b]9;4;3;0\x1b\\");
+}
+
+/// Clears the progress bar (OSC 9;4;0). Idempotent.
+pub fn progressStop(writer: *std.Io.Writer) void {
+    if (!control_enabled or progress_state == .inactive) return;
+    progress_state = .inactive;
+    writeControl(writer, "\x1b]9;4;0;0\x1b\\");
+}
+
+/// Emits a desktop notification (OSC 9) and rings the bell so the user looks
+/// at the terminal when input is needed or the run ends.
+pub fn notify(writer: *std.Io.Writer, msg: []const u8) void {
+    if (!control_enabled) return;
+    std.debug.assert(msg.len > 0);
+    writer.writeAll("\x1b]9;") catch return;
+    writer.writeAll(msg) catch return;
+    writer.writeAll("\x1b\\\x07") catch return;
+    writer.flush() catch {};
+}
+
 /// ANSI foreground color escape sequences and reset codes.
 pub const Red = "\x1b[31m";
 pub const Green = "\x1b[32m";
@@ -128,6 +193,90 @@ test "noColorRequested scans every argument" {
     try std.testing.expect(!noColorRequested(&.{"zix"}));
     try std.testing.expect(noColorRequested(&.{ "zix", "-y", "--no-color" }));
     try std.testing.expect(!noColorRequested(&.{ "zix", "--no-color=1" }));
+}
+
+test "progress sequences follow the lifecycle" {
+    control_enabled = true;
+    progress_state = .inactive;
+    defer {
+        control_enabled = false;
+        progress_state = .inactive;
+    }
+
+    var buf: [512]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    progressStart(&writer);
+    progressPause(&writer);
+    progressResume(&writer);
+    progressStop(&writer);
+    const out = buf[0..writer.end];
+    try std.testing.expect(std.mem.indexOf(u8, out, "\x1b]9;4;3") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\x1b]9;4;4") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\x1b]9;4;0") != null);
+}
+
+test "progress pause and resume are no-ops outside their state" {
+    control_enabled = true;
+    progress_state = .inactive;
+    defer {
+        control_enabled = false;
+        progress_state = .inactive;
+    }
+
+    var buf: [512]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    progressPause(&writer);
+    progressResume(&writer);
+    try std.testing.expectEqual(@as(usize, 0), writer.end);
+
+    progressStart(&writer);
+    const after_start = writer.end;
+    progressResume(&writer);
+    try std.testing.expectEqual(after_start, writer.end);
+
+    progressPause(&writer);
+    const after_pause = writer.end;
+    progressPause(&writer);
+    try std.testing.expectEqual(after_pause, writer.end);
+
+    progressStop(&writer);
+    const after_stop = writer.end;
+    progressStop(&writer);
+    try std.testing.expectEqual(after_stop, writer.end);
+}
+
+test "terminal control is silent when disabled" {
+    control_enabled = false;
+    var buf: [128]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    progressStart(&writer);
+    progressPause(&writer);
+    progressResume(&writer);
+    progressStop(&writer);
+    notify(&writer, "zix: none");
+    try std.testing.expectEqual(@as(usize, 0), writer.end);
+}
+
+test "notify writes an OSC 9 notification and a bell" {
+    control_enabled = true;
+    defer control_enabled = false;
+
+    var buf: [256]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    notify(&writer, "zix: done");
+    const out = buf[0..writer.end];
+    try std.testing.expect(std.mem.indexOf(u8, out, "\x1b]9;zix: done\x1b\\") != null);
+    try std.testing.expectEqual(@as(u8, '\x07'), out[out.len - 1]);
+}
+
+test "controlSupported honors TERM=dumb" {
+    var environ = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ.deinit();
+    try environ.put("TERM", "dumb");
+    try std.testing.expect(!controlSupported(std.testing.io, &environ));
+    try environ.put("TERM", "xterm-256color");
+    // The TTY half depends on the real stdout; just exercise it.
+    _ = controlSupported(std.testing.io, &environ);
 }
 
 test "style constants are non-empty" {
