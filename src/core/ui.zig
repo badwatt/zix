@@ -48,9 +48,10 @@ fn printStyled(writer: *std.Io.Writer, color: []const u8, msg: []const u8) !void
     try io.printTo(writer, "{s}{s}{s}\n", .{ io.style(color), msg, io.style(io.Reset) });
 }
 
-/// Prints a red error message.
+/// Prints a red error message, following the stderr color decision.
 pub fn printError(writer: *std.Io.Writer, msg: []const u8) !void {
-    return printStyled(writer, io.Red, msg);
+    std.debug.assert(msg.len > 0);
+    try io.printTo(writer, "{s}{s}{s}\n", .{ io.styleErr(io.Red), msg, io.styleErr(io.Reset) });
 }
 
 /// Prints a green success message.
@@ -264,6 +265,13 @@ fn confirmAlloc(
 // --- Tests ---
 
 test "printError and printSuccess wrap in color" {
+    io.color_enabled = true;
+    io.err_color_enabled = true;
+    defer {
+        io.color_enabled = true;
+        io.err_color_enabled = true;
+    }
+
     var buf: [128]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buf);
     try printError(&writer, "bad");
@@ -279,7 +287,11 @@ test "printError and printSuccess wrap in color" {
 
 test "styles are dropped when color is disabled" {
     io.color_enabled = false;
-    defer io.color_enabled = true;
+    io.err_color_enabled = false;
+    defer {
+        io.color_enabled = true;
+        io.err_color_enabled = true;
+    }
 
     var buf: [256]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buf);
@@ -290,6 +302,25 @@ test "styles are dropped when color is disabled" {
     var writer2 = std.Io.Writer.fixed(&buf2);
     try printTitle(&writer2, "ZIX");
     try std.testing.expect(std.mem.indexOf(u8, buf2[0..writer2.end], "\x1b[") == null);
+}
+
+test "printError follows the stderr color decision" {
+    io.color_enabled = true;
+    io.err_color_enabled = false;
+    defer {
+        io.color_enabled = true;
+        io.err_color_enabled = true;
+    }
+
+    var err_buf: [128]u8 = undefined;
+    var err_writer = std.Io.Writer.fixed(&err_buf);
+    try printError(&err_writer, "bad");
+    try std.testing.expectEqualStrings("bad\n", err_buf[0..err_writer.end]);
+
+    var out_buf: [128]u8 = undefined;
+    var out_writer = std.Io.Writer.fixed(&out_buf);
+    try printSuccess(&out_writer, "good");
+    try std.testing.expect(std.mem.indexOf(u8, out_buf[0..out_writer.end], "\x1b[") != null);
 }
 
 test "printOutput writes verbatim" {

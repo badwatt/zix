@@ -44,8 +44,11 @@ pub fn main(init: std.process.Init) !u8 {
     // Diagnostics go to stderr; colors only when the terminal supports them.
     var stderr_buf: [1024]u8 = undefined;
     var stderr_writer = std.Io.File.stderr().writer(io, &stderr_buf);
-    io_mod.color_enabled = io_mod.colorSupported(io, init.environ_map) and
-        !io_mod.noColorRequested(args_list.items);
+    const no_color = io_mod.noColorRequested(args_list.items);
+    io_mod.color_enabled = !no_color and
+        io_mod.colorSupported(io, init.environ_map, std.Io.File.stdout());
+    io_mod.err_color_enabled = !no_color and
+        io_mod.colorSupported(io, init.environ_map, std.Io.File.stderr());
 
     // Dependency injection: command execution, user I/O, scratch allocator,
     // and environment all flow through Deps for testability.

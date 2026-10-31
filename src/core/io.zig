@@ -23,20 +23,29 @@ pub fn printTo(
 
 // --- ANSI Styles ---
 
-/// Whether ANSI style sequences are emitted. Set once at startup from
+/// Whether ANSI style sequences are emitted on stdout. Set once at startup from
 /// `colorSupported`; tests may toggle it.
 pub var color_enabled: bool = true;
 
-/// Returns `code` when color is enabled, otherwise an empty string.
+/// Whether ANSI style sequences are emitted on stderr. Kept separate so a
+/// redirected stream never receives escapes because the other one is a TTY.
+pub var err_color_enabled: bool = true;
+
+/// Returns `code` when stdout color is enabled, otherwise an empty string.
 pub fn style(code: []const u8) []const u8 {
     return if (color_enabled) code else "";
 }
 
-/// True when the environment and stdout allow colored output: `NO_COLOR` is
-/// unset or empty, `TERM` is not `dumb`, and stdout is a terminal.
-pub fn colorSupported(io: std.Io, environ: *std.process.Environ.Map) bool {
+/// Returns `code` when stderr color is enabled, otherwise an empty string.
+pub fn styleErr(code: []const u8) []const u8 {
+    return if (err_color_enabled) code else "";
+}
+
+/// True when the environment and `file` allow colored output: `NO_COLOR` is
+/// unset or empty, `TERM` is not `dumb`, and `file` is a terminal.
+pub fn colorSupported(io: std.Io, environ: *std.process.Environ.Map, file: std.Io.File) bool {
     if (!colorAllowedByEnv(environ)) return false;
-    return std.Io.File.stdout().isTty(io) catch false;
+    return file.isTty(io) catch false;
 }
 
 /// Environment half of `colorSupported`: `NO_COLOR` and `TERM=dumb` opt out.
@@ -74,13 +83,24 @@ test "printTo writes exact bytes" {
     try std.testing.expectEqualStrings("hello 42 world", buf[0..14]);
 }
 
-test "style honors color_enabled" {
+test "style honors the per-stream flags" {
     color_enabled = false;
-    defer color_enabled = true;
+    err_color_enabled = false;
+    defer {
+        color_enabled = true;
+        err_color_enabled = true;
+    }
     try std.testing.expectEqualStrings("", style(Red));
     try std.testing.expectEqualStrings("", style(Reset));
+    try std.testing.expectEqualStrings("", styleErr(Red));
+    try std.testing.expectEqualStrings("", styleErr(Reset));
+
     color_enabled = true;
     try std.testing.expectEqualStrings(Red, style(Red));
+    try std.testing.expectEqualStrings("", styleErr(Red));
+
+    err_color_enabled = true;
+    try std.testing.expectEqualStrings(Red, styleErr(Red));
 }
 
 test "colorSupported honors NO_COLOR and TERM" {
@@ -99,8 +119,9 @@ test "colorSupported honors NO_COLOR and TERM" {
     try environ.put("TERM", "xterm-256color");
     try std.testing.expect(colorAllowedByEnv(&environ));
 
-    // The terminal probe depends on the real stdout; just exercise it.
-    _ = colorSupported(std.testing.io, &environ);
+    // The terminal probe depends on the real streams; just exercise it.
+    _ = colorSupported(std.testing.io, &environ, std.Io.File.stdout());
+    _ = colorSupported(std.testing.io, &environ, std.Io.File.stderr());
 }
 
 test "noColorRequested scans every argument" {
