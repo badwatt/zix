@@ -62,12 +62,15 @@ pub fn main(init: std.process.Init) !u8 {
         // it the way a SIGPIPE'd process would instead of an "unexpected error".
         if (err == error.WriteFailed) return 141;
 
-        // Use the same stderr writer as the workflow: mixing it with
-        // `std.debug.print` corrupts the stream when stderr is a file.
-        var err_buf: [256]u8 = undefined;
-        const msg = std.fmt.bufPrint(&err_buf, "Error: {s}", .{cli.errorMessage(err)}) catch
-            cli.errorMessage(err);
-        ui.printError(&stderr_writer.interface, msg) catch {};
+        // Parse and validation errors were already reported with detail.
+        if (err != error.InvalidArgs and err != error.InvalidConfig) {
+            // Use the same stderr writer as the workflow: mixing it with
+            // `std.debug.print` corrupts the stream when stderr is a file.
+            var err_buf: [256]u8 = undefined;
+            const msg = std.fmt.bufPrint(&err_buf, "Error: {s}", .{cli.errorMessage(err)}) catch
+                cli.errorMessage(err);
+            ui.printError(&stderr_writer.interface, msg) catch {};
+        }
         return cli.exitCode(err);
     };
 

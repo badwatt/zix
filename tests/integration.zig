@@ -71,6 +71,37 @@ test "unknown flag exits with code 2 and reports on stderr" {
     try std.testing.expect(std.mem.indexOf(u8, result.stdout, "Unknown flag") == null);
 }
 
+test "workflow failures are reported once" {
+    const result = try run(&.{
+        "--only", "pull", "-y", "-n", "testhost", "-r", "/nonexistent_zix_repo",
+    });
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(i32, 1), result.code());
+    try std.testing.expectEqual(
+        @as(usize, 1),
+        std.mem.count(u8, result.stderr, "Repository is not a git working tree"),
+    );
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, result.stderr, "Error:"));
+}
+
+test "invalid arguments are reported once" {
+    const result = try run(&.{"-x"});
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(i32, 2), result.code());
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, result.stderr, "Error:"));
+    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "Unknown flag") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "Invalid arguments") == null);
+}
+
+test "invalid configuration is reported once" {
+    const result = try run(&.{ "-r", "" });
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(i32, 2), result.code());
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, result.stderr, "Error:"));
+    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "repo path cannot be empty") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "Invalid configuration") == null);
+}
+
 test "zero keep exits with code 2" {
     const result = try run(&.{ "-k", "0" });
     defer result.deinit(std.testing.allocator);

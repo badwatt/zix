@@ -23,6 +23,7 @@ pub const Error = error{
     GitAddFailed,
     DiffFailed,
     RebuildFailed,
+    RebuildSignaled,
     HostnameUnknown,
     CleanupFailed,
 };
@@ -120,20 +121,14 @@ pub fn execute(
     if (config.runs(.diff)) try showDiff(io, writer, commands, deps);
 }
 
-/// Reports `msg` on stderr and returns `err`.
-fn fail(deps: Deps, err: Error, msg: []const u8) anyerror {
-    try deps.ui.err(deps.err_writer, msg);
-    return err;
-}
-
 /// Verifies the repo is a git work tree, then pulls.
 fn pull(io: std.Io, writer: *std.Io.Writer, commands: *const Commands, deps: Deps) anyerror!void {
     try deps.ui.title(writer, "Git Pull");
     if (try deps.runner.probe(io, &commands.git_rev_parse) != 0) {
-        return fail(deps, Error.NotAGitRepo, "Repository is not a git working tree");
+        return Error.NotAGitRepo;
     }
     if (try deps.runner.run(io, &commands.git_pull) != 0) {
-        return fail(deps, Error.GitPullFailed, "Failed to pull changes");
+        return Error.GitPullFailed;
     }
 }
 
@@ -141,7 +136,7 @@ fn pull(io: std.Io, writer: *std.Io.Writer, commands: *const Commands, deps: Dep
 fn flakeUpdate(io: std.Io, writer: *std.Io.Writer, commands: *const Commands, deps: Deps) anyerror!void {
     try deps.ui.title(writer, "Nix Update");
     if (try deps.runner.run(io, &commands.nix_update) != 0) {
-        return fail(deps, Error.FlakeUpdateFailed, "Failed to update flake inputs");
+        return Error.FlakeUpdateFailed;
     }
 }
 
@@ -158,7 +153,7 @@ fn stage(
     defer status.deinit(deps.allocator);
     if (status.code != 0) {
         if (status.stderr.len > 0) try deps.ui.output(deps.err_writer, status.stderr);
-        return fail(deps, Error.GitStatusFailed, "Failed to read repository status");
+        return Error.GitStatusFailed;
     }
     if (std.mem.trim(u8, status.stdout, " \t\r\n").len == 0) return true;
 
@@ -176,7 +171,7 @@ fn stage(
     }
 
     if (try deps.runner.run(io, &commands.git_add) != 0) {
-        return fail(deps, Error.GitAddFailed, "Failed to add changes to the stage");
+        return Error.GitAddFailed;
     }
     try deps.ui.success(writer, "Changes added to git stage successfully");
     return true;
@@ -189,21 +184,15 @@ fn rebuild(io: std.Io, writer: *std.Io.Writer, commands: *const Commands, deps: 
     if (code == 0) return;
     // 128 + N is the shell convention for a signal-terminated child. An
     // out-of-memory kill can arrive this way, so point at --jobs.
-    if (code >= 128) {
-        return fail(
-            deps,
-            Error.RebuildFailed,
-            "nixos-rebuild was terminated by a signal; if the build ran out of memory, lower --cores/--jobs",
-        );
-    }
-    return fail(deps, Error.RebuildFailed, "Nixos rebuild failed");
+    if (code >= 128) return Error.RebuildSignaled;
+    return Error.RebuildFailed;
 }
 
 /// Prunes old generations and frees unreferenced store paths.
 fn cleanup(io: std.Io, commands: *const Commands, deps: Deps) anyerror!void {
     for ([_][]const []const u8{ &commands.nix_keep, &commands.nix_gc }) |argv| {
         if (try deps.runner.run(io, argv) != 0) {
-            return fail(deps, Error.CleanupFailed, "Cleanup failed");
+            return Error.CleanupFailed;
         }
     }
 }
@@ -215,7 +204,7 @@ fn showDiff(io: std.Io, writer: *std.Io.Writer, commands: *const Commands, deps:
     defer output.deinit(deps.allocator);
     if (output.code != 0) {
         if (output.stderr.len > 0) try deps.ui.output(deps.err_writer, output.stderr);
-        return fail(deps, Error.DiffFailed, "Failed to compute closure diff");
+        return Error.DiffFailed;
     }
     const tail = cmd.tailFromLastVersion(output.stdout);
     try deps.ui.output(writer, tail);
@@ -237,6 +226,7 @@ pub fn errorMessage(err: anyerror) []const u8 {
         error.GitAddFailed => "Failed to add changes to the stage",
         error.DiffFailed => "Failed to compute closure diff",
         error.RebuildFailed => "Nixos rebuild failed",
+        error.RebuildSignaled => "nixos-rebuild was terminated by a signal; if the build ran out of memory, lower --cores/--jobs",
         error.HostnameUnknown => "Could not determine hostname; pass --hostname",
         error.CleanupFailed => "Cleanup failed",
         else => "Unexpected error",
@@ -263,7 +253,6 @@ var probe_result: i32 = 0;
 var probe_error: bool = false;
 var confirm_count: u32 = 0;
 var confirm_false_at: u32 = 0;
-var last_error: []const u8 = "";
 var last_success: []const u8 = "";
 var last_output: []const u8 = "";
 var output_copy: [1024]u8 = undefined;
@@ -289,7 +278,6 @@ fn resetMocks() void {
     probe_error = false;
     confirm_count = 0;
     confirm_false_at = 0;
-    last_error = "";
     last_success = "";
     output_len = 0;
     last_output = "";
@@ -332,9 +320,6 @@ fn mockProbe(_: ?*anyopaque, _: std.Io, _: process.Runner.Command) anyerror!i32 
 
 fn mockTitle(_: *std.Io.Writer, _: []const u8) anyerror!void {}
 fn mockConfig(_: *std.Io.Writer, _: Config) anyerror!void {}
-fn mockError(_: *std.Io.Writer, msg: []const u8) anyerror!void {
-    last_error = msg;
-}
 fn mockSuccess(_: *std.Io.Writer, msg: []const u8) anyerror!void {
     last_success = msg;
 }
@@ -357,7 +342,6 @@ fn testDeps(allocator: std.mem.Allocator, environ: *std.process.Environ.Map) Dep
         .ui = .{
             .title = mockTitle,
             .confirm = mockConfirm,
-            .err = mockError,
             .success = mockSuccess,
             .output = mockOutput,
             .config = mockConfig,
@@ -422,10 +406,9 @@ test "execute reports a signal-terminated rebuild" {
     var buf: [512]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buf);
     try std.testing.expectError(
-        Error.RebuildFailed,
+        Error.RebuildSignaled,
         execute(std.testing.io, &writer, config, &commands, testDeps(arena.allocator(), &environ)),
     );
-    try std.testing.expect(std.mem.indexOf(u8, last_error, "signal") != null);
 }
 
 test "detectFlavor picks compatible flavor" {
@@ -518,7 +501,6 @@ test "execute fails when repo is not a git work tree" {
         Error.NotAGitRepo,
         execute(std.testing.io, &writer, config, &commands, testDeps(arena.allocator(), &environ)),
     );
-    try std.testing.expectEqualStrings("Repository is not a git working tree", last_error);
 }
 
 test "execute fails when git pull fails" {
@@ -751,7 +733,6 @@ test "execute fails when diff-closures fails" {
         Error.DiffFailed,
         execute(std.testing.io, &writer, config, &commands, testDeps(arena.allocator(), &environ)),
     );
-    try std.testing.expectEqualStrings("Failed to compute closure diff", last_error);
 }
 
 test "execute runs only the selected steps" {
@@ -802,6 +783,7 @@ test "errorMessage and exitCode cover every variant" {
     try std.testing.expectEqualStrings("Failed to add changes to the stage", errorMessage(error.GitAddFailed));
     try std.testing.expectEqualStrings("Failed to compute closure diff", errorMessage(error.DiffFailed));
     try std.testing.expectEqualStrings("Nixos rebuild failed", errorMessage(error.RebuildFailed));
+    try std.testing.expect(std.mem.indexOf(u8, errorMessage(error.RebuildSignaled), "signal") != null);
     try std.testing.expectEqualStrings("Could not determine hostname; pass --hostname", errorMessage(error.HostnameUnknown));
     try std.testing.expectEqualStrings("Cleanup failed", errorMessage(error.CleanupFailed));
     try std.testing.expectEqualStrings("Unexpected error", errorMessage(error.MockError));

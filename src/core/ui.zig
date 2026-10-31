@@ -18,7 +18,6 @@ const MAX_TITLE_LEN: u32 = 128;
 pub const UserIo = struct {
     title: *const fn (*std.Io.Writer, []const u8) anyerror!void,
     confirm: *const fn (*std.Io.Writer, bool, ?[]const u8) anyerror!bool,
-    err: *const fn (*std.Io.Writer, []const u8) anyerror!void,
     success: *const fn (*std.Io.Writer, []const u8) anyerror!void,
     output: *const fn (*std.Io.Writer, []const u8) anyerror!void,
     config: *const fn (*std.Io.Writer, Config) anyerror!void,
@@ -32,7 +31,6 @@ pub const UserIo = struct {
 pub const terminal = UserIo{
     .title = printTitle,
     .confirm = if (builtin.is_test) testConfirm else confirm,
-    .err = printError,
     .success = printSuccess,
     .output = printOutput,
     .config = configPrint,
@@ -402,7 +400,6 @@ test "terminal port exposes production functions" {
     var writer = std.Io.Writer.fixed(&buf);
     try terminal.title(&writer, "T");
     _ = try terminal.confirm(&writer, true, null);
-    try terminal.err(&writer, "e");
     try terminal.success(&writer, "s");
     try terminal.output(&writer, "o");
     try terminal.config(&writer, Config{

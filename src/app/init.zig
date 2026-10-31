@@ -386,7 +386,6 @@ const test_runner = cli.Deps{
     .ui = .{
         .title = echoTitle,
         .confirm = yesConfirm,
-        .err = noopStatus,
         .success = noopStatus,
         .output = noopStatus,
         .config = noopConfig,
