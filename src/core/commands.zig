@@ -148,9 +148,9 @@ pub fn formatKeep(allocator: std.mem.Allocator, generations_to_keep: u8) ![]cons
     return std.fmt.allocPrint(allocator, "+{d}", .{generations_to_keep});
 }
 
-/// Returns the `sudo nix-collect-garbage` argv.
-pub fn nixCollectGarbage() [2][]const u8 {
-    return .{ "sudo", "nix-collect-garbage" };
+/// Returns the `sudo nix store gc` argv (the modern garbage collector).
+pub fn nixCollectGarbage() [4][]const u8 {
+    return .{ "sudo", "nix", "store", "gc" };
 }
 
 /// Returns the `nix profile diff-closures --profile <system>` argv.
@@ -213,7 +213,7 @@ test "nix commands use argv, not shell" {
         &rebuildProbe(),
     );
     try expectArgv(
-        &.{ "sudo", "nix-collect-garbage" },
+        &.{ "sudo", "nix", "store", "gc" },
         &nixCollectGarbage(),
     );
     try expectArgv(

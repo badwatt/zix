@@ -53,7 +53,7 @@ pub const Commands = struct {
     nix_update: [5][]const u8,
     nix_rebuild: cmd.Rebuild,
     nix_keep: [6][]const u8,
-    nix_gc: [2][]const u8,
+    nix_gc: [4][]const u8,
     nix_diff: [5][]const u8,
 };
 
@@ -372,7 +372,8 @@ test "buildCommands populates every field" {
     try std.testing.expectEqualStrings("/repo#host", rebuild_argv[5]);
     try std.testing.expectEqualStrings("--elevate=sudo", rebuild_argv[2]);
     try std.testing.expectEqualStrings("+10", commands.nix_keep[5]);
-    try std.testing.expectEqualStrings("nix-collect-garbage", commands.nix_gc[1]);
+    try std.testing.expectEqualStrings("store", commands.nix_gc[2]);
+    try std.testing.expectEqualStrings("gc", commands.nix_gc[3]);
     try std.testing.expectEqualStrings("diff-closures", commands.nix_diff[2]);
 }
 
@@ -665,7 +666,7 @@ test "execute fails when garbage collection fails" {
     var environ = std.process.Environ.Map.init(std.testing.allocator);
     defer environ.deinit();
     resetMocks();
-    fail_needle = "nix-collect-garbage";
+    fail_needle = "gc";
 
     var config = testConfig("host");
     config.yes = true;
