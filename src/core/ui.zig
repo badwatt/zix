@@ -233,13 +233,14 @@ fn writeConfirmPrompt(
     try writer.flush();
 }
 
-/// Parses a yes/no response. Empty input falls back to `default_value`;
-/// anything other than "y"/"yes" is a no.
+/// Parses a yes/no response. Surrounding whitespace is ignored; empty input
+/// falls back to `default_value`; anything other than "y"/"yes" is a no.
 fn parseConfirmResponse(line: []const u8, default_value: bool) bool {
     var lower_buf: [256]u8 = undefined;
     if (line.len > lower_buf.len) return false;
-    if (line.len == 0) return default_value;
-    const lower = std.ascii.lowerString(&lower_buf, line);
+    const trimmed = std.mem.trim(u8, line, " \t\r");
+    if (trimmed.len == 0) return default_value;
+    const lower = std.ascii.lowerString(&lower_buf, trimmed);
     return equal(u8, lower, "y") or equal(u8, lower, "yes");
 }
 
@@ -489,6 +490,10 @@ test "confirm responses" {
         .{ .input = "\n", .default_value = false, .expected = false },
         .{ .input = "maybe\n", .default_value = true, .expected = false },
         .{ .input = "maybe\n", .default_value = false, .expected = false },
+        .{ .input = " y \n", .default_value = false, .expected = true },
+        .{ .input = "\tyes\t\n", .default_value = false, .expected = true },
+        .{ .input = " N \n", .default_value = true, .expected = false },
+        .{ .input = "\r\n", .default_value = true, .expected = true },
         .{ .input = "y\n", .default_value = false, .expected = true, .msg = "Sure" },
     };
     inline for (cases) |tc| {
