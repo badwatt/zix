@@ -147,8 +147,10 @@ fn printConfigLine(
 
 /// Prints the visible config fields with colored labels via `printConfigLine`.
 /// `yes` is omitted (it only skips prompts); `dry-run` is shown when set so the
-/// user never mistakes a dry run for a real one. Always ends with a newline
-/// so a following `printTitle` renders its leading newline as a blank line.
+/// user never mistakes a dry run for a real one. `update`/`diff` show the
+/// effective pipeline, so `--only` is reflected honestly. Always ends with a
+/// newline so a following `printTitle` renders its leading newline as a blank
+/// line.
 pub fn configPrint(writer: *std.Io.Writer, config: Config) !void {
     std.debug.assert(config.repo.len > 0);
     try printConfigLine(writer, "repo", config.repo);
@@ -156,8 +158,8 @@ pub fn configPrint(writer: *std.Io.Writer, config: Config) !void {
     try printConfigLine(writer, "keep", config.keep);
     if (config.jobs) |jobs| try printConfigLine(writer, "jobs", jobs);
     if (config.cores) |cores| try printConfigLine(writer, "cores", cores);
-    try printConfigLine(writer, "update", config.update);
-    try printConfigLine(writer, "diff", config.diff);
+    try printConfigLine(writer, "update", config.runs(.flake));
+    try printConfigLine(writer, "diff", config.runs(.diff));
     if (config.dry_run) try printConfigLine(writer, "dry-run", config.dry_run);
 }
 
@@ -352,6 +354,31 @@ test "configPrint renders visible fields only" {
     try std.testing.expect(std.mem.indexOf(u8, out, "dry-run = true") != null);
     // Ends with a newline so the next title renders a separating blank line.
     try std.testing.expectEqual(@as(u8, '\n'), out[out.len - 1]);
+}
+
+test "configPrint shows the effective steps under --only" {
+    io.color_enabled = false;
+    defer io.color_enabled = true;
+
+    var config = Config{
+        .repo = "r",
+        .hostname = "h",
+        .keep = 1,
+        .jobs = null,
+        .cores = null,
+        .update = true,
+        .diff = false,
+        .yes = false,
+        .dry_run = false,
+    };
+    config.only = std.EnumSet(@import("../app/config.zig").Step).initOne(.diff);
+
+    var buf: [1024]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    try configPrint(&writer, config);
+    const out = buf[0..writer.end];
+    try std.testing.expect(std.mem.indexOf(u8, out, "update = false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "diff = true") != null);
 }
 
 test "configPrint omits dry-run when it is off" {
