@@ -5,7 +5,7 @@
 
   outputs =
     { self, zig2nix, ... }:
-    zig2nix.inputs.flake-utils.lib.eachDefaultSystem (
+    zig2nix.inputs.flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" ] (
       system:
       let
         env = zig2nix.outputs.zig-env.${system} {
@@ -58,6 +58,13 @@
         checks.default = default;
 
         formatter = env.pkgs.nixfmt;
+
+        # Static binaries for other architectures, built with Zig's cross
+        # compiler (no binfmt or remote builder needed).
+        legacyPackages.cross = {
+          x86_64-linux-musl = env.package (base // { zigTarget = "x86_64-linux-musl"; });
+          aarch64-linux-musl = env.package (base // { zigTarget = "aarch64-linux-musl"; });
+        };
 
         apps = {
           default = appFor default;

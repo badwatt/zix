@@ -61,6 +61,7 @@ nix build .#default   # binary, man page and shell completions
 nix build .#foreign   # raw static binary, for copying elsewhere
 nix run .#dev -- ...  # build and run the working tree
 nix run .#test        # unit, integration and build-tool tests
+nix build .#legacyPackages.x86_64-linux.cross.aarch64-linux-musl  # cross static
 ```
 
 ## Releases
