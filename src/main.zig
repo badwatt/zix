@@ -59,6 +59,7 @@ pub fn main(init: std.process.Init) !u8 {
     const deps = cli.Deps{
         .allocator = init.gpa,
         .runner = process.real,
+        .stdin = std.Io.File.stdin(),
         .ui = ui.terminal,
         .err_writer = &stderr_writer.interface,
         .environ = init.environ_map,

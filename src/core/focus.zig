@@ -10,6 +10,7 @@
 //! "focused", so zix stays quiet instead of notifying spuriously.
 
 const std = @import("std");
+const io_mod = @import("io.zig");
 const process = @import("process.zig");
 
 const Kind = enum { niri, hyprland };
@@ -57,14 +58,6 @@ fn compositor(environ: *std.process.Environ.Map) ?Kind {
     return null;
 }
 
-/// Writes an OSC 2 window title and flushes.
-fn writeTitle(writer: *std.Io.Writer, title: []const u8) void {
-    writer.writeAll("\x1b]2;") catch return;
-    writer.writeAll(title) catch return;
-    writer.writeAll("\x1b\\") catch return;
-    writer.flush() catch {};
-}
-
 /// Sets a unique title, finds the matching compositor window and caches its
 /// identity. Falls back to the app-id heuristic if the window cannot be found.
 fn track(
@@ -80,7 +73,7 @@ fn track(
         .{ std.os.linux.getpid(), title_counter },
     ) catch return;
     title_len = nonce.len;
-    writeTitle(writer, nonce);
+    io_mod.writeTitle(writer, nonce);
 
     var attempts: usize = 0;
     while (attempts < 10) : (attempts += 1) {
@@ -98,7 +91,7 @@ fn track(
     }
 
     // The shell prompt sets the real title again after zix exits.
-    writeTitle(writer, "zix");
+    io_mod.writeTitle(writer, "zix");
 }
 
 fn findNiriWindow(

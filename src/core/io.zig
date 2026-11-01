@@ -63,7 +63,8 @@ fn colorAllowedByEnv(environ: *std.process.Environ.Map) bool {
 /// so the flag also silences diagnostics from an argument error.
 pub fn noColorRequested(args: []const []const u8) bool {
     for (args) |arg| {
-        if (std.mem.eql(u8, arg, "--no-color")) return true;
+        if (std.mem.eql(u8, arg, "--no-color") or
+            std.mem.startsWith(u8, arg, "--no-color=")) return true;
     }
     return false;
 }
@@ -85,13 +86,14 @@ pub var control_file: std.Io.File = undefined;
 
 /// Time between keep-alive refreshes. Ghostty recommends at least one per
 /// second; a shorter interval also shortens the join on stop.
-var keepalive_interval_ms: i32 = 500;
+var keepalive_interval_ms: i32 = 100;
 
 const progress_running = "\x1b]9;4;3;0\x1b\\";
 const progress_paused = "\x1b]9;4;4\x1b\\";
 const progress_clear = "\x1b]9;4;0;0\x1b\\";
 
 var progress_active: bool = false;
+var control_lock: std.atomic.Mutex = .unlocked;
 var keepalive_thread: ?std.Thread = null;
 var keepalive_stop = std.atomic.Value(bool).init(true);
 var keepalive_paused = std.atomic.Value(bool).init(false);
@@ -106,24 +108,46 @@ pub fn controlSupported(io: std.Io, environ: *std.process.Environ.Map) bool {
     return std.Io.File.stdout().isTty(io) catch false;
 }
 
-/// Writes `seq` and flushes; control sequences are best-effort.
-fn writeControl(writer: *std.Io.Writer, seq: []const u8) void {
+/// Serializes control writes between the main thread and the keep-alive
+/// thread. The critical sections only write a short OSC sequence.
+fn lockControl() void {
+    while (!control_lock.tryLock()) std.atomic.spinLoopHint();
+}
+
+fn unlockControl() void {
+    control_lock.unlock();
+}
+
+/// Writes `seq` and flushes; the caller holds `control_lock`.
+fn writeControlUnlocked(writer: *std.Io.Writer, seq: []const u8) void {
     writer.writeAll(seq) catch return;
     writer.flush() catch {};
+}
+
+/// Writes `seq` and flushes; control sequences are best-effort.
+fn writeControl(writer: *std.Io.Writer, seq: []const u8) void {
+    lockControl();
+    defer unlockControl();
+    writeControlUnlocked(writer, seq);
 }
 
 /// Background refresher: Ghostty forgets a progress state after ~15s without
 /// an update, so re-emit the current state while the run is active.
 fn keepAlive() void {
     var no_fds: [0]std.posix.pollfd = .{};
-    while (!keepalive_stop.load(.acquire)) {
+    while (true) {
         _ = std.posix.poll(&no_fds, keepalive_interval_ms) catch {};
-        if (keepalive_stop.load(.acquire)) break;
+        lockControl();
+        if (keepalive_stop.load(.acquire)) {
+            unlockControl();
+            break;
+        }
         const seq = if (keepalive_paused.load(.acquire))
             progress_paused
         else
             progress_running;
         control_file.writeStreamingAll(control_io, seq) catch {};
+        unlockControl();
         _ = keepalive_ticks.fetchAdd(1, .monotonic);
     }
 }
@@ -131,15 +155,17 @@ fn keepAlive() void {
 /// Shows an indeterminate progress bar (OSC 9;4;3) and starts the keep-alive.
 pub fn progressStart(writer: *std.Io.Writer) void {
     if (!control_enabled) return;
+    lockControl();
     if (progress_active) {
         keepalive_paused.store(false, .release);
-        writeControl(writer, progress_running);
+        writeControlUnlocked(writer, progress_running);
+        unlockControl();
         return;
     }
-
     progress_active = true;
     keepalive_paused.store(false, .release);
-    writeControl(writer, progress_running);
+    writeControlUnlocked(writer, progress_running);
+    unlockControl();
 
     if (!keepalive_enabled or keepalive_thread != null) return;
     keepalive_stop.store(false, .release);
@@ -148,23 +174,32 @@ pub fn progressStart(writer: *std.Io.Writer) void {
 
 /// Pauses the progress bar while waiting for the user (OSC 9;4;4).
 pub fn progressPause(writer: *std.Io.Writer) void {
-    if (!control_enabled or !progress_active or keepalive_paused.load(.acquire)) return;
+    if (!control_enabled or !progress_active) return;
+    lockControl();
+    defer unlockControl();
+    if (!progress_active or keepalive_paused.load(.acquire)) return;
     keepalive_paused.store(true, .release);
-    writeControl(writer, progress_paused);
+    writeControlUnlocked(writer, progress_paused);
 }
 
 /// Resumes a paused progress bar (OSC 9;4;3).
 pub fn progressResume(writer: *std.Io.Writer) void {
-    if (!control_enabled or !progress_active or !keepalive_paused.load(.acquire)) return;
+    if (!control_enabled or !progress_active) return;
+    lockControl();
+    defer unlockControl();
+    if (!progress_active or !keepalive_paused.load(.acquire)) return;
     keepalive_paused.store(false, .release);
-    writeControl(writer, progress_running);
+    writeControlUnlocked(writer, progress_running);
 }
 
 /// Clears the progress bar (OSC 9;4;0) and stops the keep-alive.
 pub fn progressStop(writer: *std.Io.Writer) void {
     if (!progress_active) return;
+    lockControl();
     progress_active = false;
     keepalive_stop.store(true, .release);
+    unlockControl();
+
     if (keepalive_thread) |thread| {
         thread.join();
         keepalive_thread = null;
@@ -172,11 +207,25 @@ pub fn progressStop(writer: *std.Io.Writer) void {
     if (control_enabled) writeControl(writer, progress_clear);
 }
 
+/// Writes an OSC 2 window title. The caller must ensure that terminal control
+/// is enabled; focus detection only runs in that case.
+pub fn writeTitle(writer: *std.Io.Writer, title: []const u8) void {
+    std.debug.assert(title.len > 0);
+    lockControl();
+    defer unlockControl();
+    writer.writeAll("\x1b]2;") catch return;
+    writer.writeAll(title) catch return;
+    writer.writeAll("\x1b\\") catch return;
+    writer.flush() catch {};
+}
+
 /// Emits a desktop notification (OSC 9) and rings the bell so the user looks
 /// at the terminal when input is needed or the run ends.
 pub fn notify(writer: *std.Io.Writer, msg: []const u8) void {
     if (!control_enabled) return;
     std.debug.assert(msg.len > 0);
+    lockControl();
+    defer unlockControl();
     writer.writeAll("\x1b]9;") catch return;
     writer.writeAll(msg) catch return;
     writer.writeAll("\x1b\\\x07") catch return;
@@ -242,7 +291,7 @@ test "colorSupported honors NO_COLOR and TERM" {
 test "noColorRequested scans every argument" {
     try std.testing.expect(!noColorRequested(&.{"zix"}));
     try std.testing.expect(noColorRequested(&.{ "zix", "-y", "--no-color" }));
-    try std.testing.expect(!noColorRequested(&.{ "zix", "--no-color=1" }));
+    try std.testing.expect(noColorRequested(&.{ "zix", "--no-color=1" }));
 }
 
 test "progress sequences follow the lifecycle" {

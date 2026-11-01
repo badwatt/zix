@@ -55,6 +55,11 @@ pub const Runner = struct {
 /// Production runner backed by `std.process`.
 pub const real = Runner{ .runFn = realRun, .captureFn = realCapture, .probeFn = realProbe };
 
+/// Upper bounds for captured stream output. A runaway command must not be able
+/// to exhaust memory; callers map `error.StreamTooLong` to a domain error.
+pub const capture_stdout_limit = 16 * 1024 * 1024;
+pub const capture_stderr_limit = 4 * 1024 * 1024;
+
 /// Spawns `argv` with the given stdio and waits, returning its exit code.
 fn spawnAndWait(io: std.Io, argv: Runner.Command, stdio: std.process.SpawnOptions.StdIo) anyerror!i32 {
     std.debug.assert(argv.len > 0);
@@ -78,7 +83,11 @@ fn realCapture(
     argv: Runner.Command,
 ) anyerror!Capture {
     std.debug.assert(argv.len > 0);
-    const result = try std.process.run(allocator, io, .{ .argv = argv });
+    const result = try std.process.run(allocator, io, .{
+        .argv = argv,
+        .stdout_limit = .limited(capture_stdout_limit),
+        .stderr_limit = .limited(capture_stderr_limit),
+    });
     return .{
         .code = termCode(result.term),
         .stdout = result.stdout,
@@ -130,6 +139,16 @@ test "real capture returns output and code" {
     defer bad.deinit(alloc);
     try std.testing.expectEqual(@as(i32, 3), bad.code);
     try std.testing.expectEqualStrings("x\n", bad.stdout);
+}
+
+test "real capture rejects output over the limit" {
+    const io = std.testing.io;
+    try std.testing.expectError(
+        error.StreamTooLong,
+        realCapture(null, io, std.testing.allocator, &.{
+            "sh", "-c", "head -c 4194305 /dev/zero 1>&2",
+        }),
+    );
 }
 
 test "real capture surfaces spawn errors" {

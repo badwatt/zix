@@ -90,7 +90,7 @@ All tasks via `zig build`:
 
 ## Coverage
 
-100% line coverage of `src/` via **kcov**:
+100% line coverage of the instrumented `src/` code via **kcov**:
 
 ```sh
 zig build coverage
@@ -138,6 +138,10 @@ Autodoc uses `///` (declarations) and `//!` (module-level) comments. No doc comm
 
 Long options also accept `--flag=value` (`--repo=/path`, `--only=diff`).
 
+`--dry-run` prints each command instead of executing it. The read-only
+`nixos-rebuild` capability probe still runs so the preview uses the flavour
+actually installed; the probe is not printed.
+
 ### Step selection
 
 `--only` takes a comma-separated list of `pull`, `flake`, `stage`, `rebuild`,
@@ -184,6 +188,10 @@ aborted. Focus is detected through niri or Hyprland IPC; on other compositors
 zix stays quiet. To tell apart several windows of the same terminal, zix
 briefly sets the window title while identifying the exact window; the next
 shell prompt restores it.
+
+Focus is **window-level**: a background tab or pane inside the same terminal
+window counts as focused, and tmux/screen may swallow the title used for
+identification, so those cases do not notify.
 
 If sudo needs a password, zix validates it before the rebuild (`sudo -v`) so
 the prompt happens at a controlled point instead of appearing in the middle of
@@ -267,7 +275,7 @@ src/core/io.zig      Formatted output + ANSI style constants
 src/core/process.zig CommandRunner port + std.process implementation
 src/core/dry_run.zig --dry-run CommandRunner
 src/core/ui.zig      UserIo port + terminal implementation
-src/core/static_allocator.zig Two-phase allocator (init → static → deinit)
+src/core/static_allocator.zig Three-phase allocator (init → static → deinit)
 tests/integration.zig End-to-end tests for the compiled binary
 zix.1                 Man page (installed by the Nix package)
 ```

@@ -1,4 +1,4 @@
-.TH ZIX 1 "" "zix 0.17.1" "User Commands"
+.TH ZIX 1 "" "zix 0.17.2" "User Commands"
 .SH NAME
 zix \- pull, stage, rebuild and clean up a NixOS system
 .SH SYNOPSIS
@@ -97,7 +97,9 @@ before \fBsudo\fR asks for a password, and when the run finishes, fails or is
 aborted. Focus is detected through niri or Hyprland IPC; on other compositors
 \fBzix\fR stays quiet. To tell apart several windows of the same terminal,
 \fBzix\fR briefly sets the window title while identifying the exact window;
-the next shell prompt restores it.
+the next shell prompt restores it. Focus is window-level: a background tab or
+pane inside the same terminal window counts as focused, and tmux/screen may
+swallow the title used for identification, so those cases do not notify.
 .PP
 When a password is required, \fBzix\fR validates it with \fBsudo \-v\fR
 before the rebuild, so the prompt appears at a controlled point instead of in
@@ -118,7 +120,8 @@ Invalid arguments or configuration.
 .B 141
 Standard output was closed early (128 + SIGPIPE).
 .PP
-A child process killed by signal \fIN\fR yields \fB128\fR + \fIN\fR.
+A child process killed by signal \fIN\fR reports \fB128\fR + \fIN\fR; for
+a failed rebuild \fBzix\fR reports that condition and exits with \fB1\fR.
 .SH ENVIRONMENT
 .TP
 .I NO_COLOR

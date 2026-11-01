@@ -39,6 +39,8 @@ pub const Deps = struct {
     allocator: std.mem.Allocator,
     /// Command execution port.
     runner: process.Runner,
+    /// Standard input for interactive confirmations.
+    stdin: std.Io.File,
     /// User-facing output port.
     ui: ui_mod.UserIo,
     /// Diagnostics writer (stderr in production, a fixed buffer in tests).
@@ -129,9 +131,12 @@ pub fn execute(
     try deps.ui.title(writer, "ZIX Configuration");
     try deps.ui.config(writer, config);
 
-    if (!config.yes) {
+    var stdin_buf: [256]u8 = undefined;
+    var stdin_reader = deps.stdin.reader(io, &stdin_buf);
+
+    if (!config.yes and !config.dry_run and config.mutates()) {
         notifyIfUnfocused(io, writer, config, deps, "zix: confirmation required");
-        if (!(try deps.ui.confirm(writer, true, null))) {
+        if (!(try deps.ui.confirm(&stdin_reader.interface, writer, true, null))) {
             try deps.ui.output(writer, "Aborted.\n");
             notifyIfUnfocused(io, writer, config, deps, "zix: aborted");
             return;
@@ -149,19 +154,21 @@ pub fn execute(
 
     if (config.runs(.flake)) try flakeUpdate(io, writer, commands, deps);
 
-    if (config.runs(.stage) and !try stage(io, writer, config, commands, deps)) {
+    if (config.runs(.stage) and !try stage(io, writer, &stdin_reader.interface, config, commands, deps)) {
         notifyIfUnfocused(io, writer, config, deps, "zix: aborted");
         return;
     }
 
-    const uses_sudo = config.runs(.rebuild) or config.runs(.cleanup);
-    if (uses_sudo) try ensureSudo(io, writer, config, deps);
-
     if (config.runs(.rebuild)) {
+        try ensureSudo(io, writer, config, deps);
         const argv = commands.nix_rebuild orelse unreachable;
         try rebuild(io, writer, argv.slice(), deps);
     }
-    if (config.runs(.cleanup)) try cleanup(io, commands, deps);
+    if (config.runs(.cleanup)) {
+        // Revalidate: the sudo ticket may have expired during a long rebuild.
+        try ensureSudo(io, writer, config, deps);
+        try cleanup(io, writer, commands, deps);
+    }
 
     if (config.runs(.diff)) try showDiff(io, writer, commands, deps);
 
@@ -187,6 +194,8 @@ fn notifyIfUnfocused(
 /// happens where zix can announce it. Passwordless sudo is left untouched.
 fn ensureSudo(io: std.Io, writer: *std.Io.Writer, config: Config, deps: Deps) anyerror!void {
     if (config.dry_run or !sudoNeedsPassword(io, deps)) return;
+    io_mod.progressPause(writer);
+    defer io_mod.progressResume(writer);
     notifyIfUnfocused(io, writer, config, deps, "zix: sudo password required");
     if (try deps.runner.run(io, &.{ "sudo", "-v" }) != 0) return Error.SudoFailed;
 }
@@ -222,6 +231,7 @@ fn flakeUpdate(io: std.Io, writer: *std.Io.Writer, commands: *const Commands, de
 fn stage(
     io: std.Io,
     writer: *std.Io.Writer,
+    reader: *std.Io.Reader,
     config: Config,
     commands: *const Commands,
     deps: Deps,
@@ -237,9 +247,10 @@ fn stage(
     try deps.ui.title(writer, "Git Changes");
     try deps.ui.output(writer, status.stdout);
 
-    if (!config.yes) {
+    if (!config.yes and !config.dry_run and config.mutates()) {
         notifyIfUnfocused(io, writer, config, deps, "zix: confirmation required");
         if (!(try deps.ui.confirm(
+            reader,
             writer,
             true,
             "Do you want to add these changes to the stage?",
@@ -269,7 +280,13 @@ fn rebuild(io: std.Io, writer: *std.Io.Writer, argv: []const []const u8, deps: D
 }
 
 /// Prunes old generations and frees unreferenced store paths.
-fn cleanup(io: std.Io, commands: *const Commands, deps: Deps) anyerror!void {
+fn cleanup(
+    io: std.Io,
+    writer: *std.Io.Writer,
+    commands: *const Commands,
+    deps: Deps,
+) anyerror!void {
+    try deps.ui.title(writer, "Cleanup");
     for ([_][]const []const u8{ &commands.nix_keep, &commands.nix_gc }) |argv| {
         if (try deps.runner.run(io, argv) != 0) {
             return Error.CleanupFailed;
@@ -310,6 +327,9 @@ pub fn errorMessage(err: anyerror) []const u8 {
         error.HostnameUnknown => "Could not determine hostname; pass --hostname",
         error.CleanupFailed => "Cleanup failed",
         error.SudoFailed => "sudo authentication failed",
+        error.StreamTooLong => "Command output exceeded the size limit",
+        error.FileNotFound => "Required command not found",
+        error.AccessDenied => "Permission denied while running a command",
         else => "Unexpected error",
     };
 }
@@ -334,9 +354,11 @@ var probe_result: i32 = 0;
 var probe_error: bool = false;
 var probe_needle: ?[]const u8 = null;
 var probe_needle_code: i32 = 0;
+var sudo_runs: u32 = 0;
 var confirm_count: u32 = 0;
 var confirm_false_at: u32 = 0;
 var last_success: []const u8 = "";
+var last_title: []const u8 = "";
 var last_output: []const u8 = "";
 var output_copy: [1024]u8 = undefined;
 var output_len: usize = 0;
@@ -361,9 +383,11 @@ fn resetMocks() void {
     probe_error = false;
     probe_needle = null;
     probe_needle_code = 0;
+    sudo_runs = 0;
     confirm_count = 0;
     confirm_false_at = 0;
     last_success = "";
+    last_title = "";
     output_len = 0;
     last_output = "";
 }
@@ -377,6 +401,8 @@ fn hasArg(argv: process.Runner.Command, needle: []const u8) bool {
 }
 
 fn mockRun(_: ?*anyopaque, _: std.Io, argv: process.Runner.Command) anyerror!i32 {
+    if (argv.len >= 2 and std.mem.eql(u8, argv[0], "sudo") and
+        std.mem.eql(u8, argv[1], "-v")) sudo_runs += 1;
     if (fail_needle) |needle| {
         if (hasArg(argv, needle)) return fail_code;
     }
@@ -406,7 +432,9 @@ fn mockProbe(_: ?*anyopaque, _: std.Io, argv: process.Runner.Command) anyerror!i
     return probe_result;
 }
 
-fn mockTitle(_: *std.Io.Writer, _: []const u8) anyerror!void {}
+fn mockTitle(_: *std.Io.Writer, text: []const u8) anyerror!void {
+    last_title = text;
+}
 fn mockConfig(_: *std.Io.Writer, _: Config) anyerror!void {}
 fn mockSuccess(_: *std.Io.Writer, msg: []const u8) anyerror!void {
     last_success = msg;
@@ -417,7 +445,12 @@ fn mockOutput(_: *std.Io.Writer, out: []const u8) anyerror!void {
     output_len = n;
     last_output = output_copy[0..output_len];
 }
-fn mockConfirm(_: *std.Io.Writer, _: bool, _: ?[]const u8) anyerror!bool {
+fn mockConfirm(
+    _: *std.Io.Reader,
+    _: *std.Io.Writer,
+    _: bool,
+    _: ?[]const u8,
+) anyerror!bool {
     confirm_count += 1;
     if (confirm_false_at != 0 and confirm_count == confirm_false_at) return false;
     return true;
@@ -448,6 +481,7 @@ fn testDeps(allocator: std.mem.Allocator, environ: *std.process.Environ.Map) Dep
         .is_focused = alwaysUnfocused,
         .allocator = allocator,
         .runner = .{ .runFn = mockRun, .captureFn = mockCapture, .probeFn = mockProbe },
+        .stdin = std.Io.File.stdin(),
         .ui = .{
             .title = mockTitle,
             .confirm = mockConfirm,
@@ -774,6 +808,8 @@ test "execute notifies when sudo asks for a password" {
     try std.testing.expect(
         std.mem.indexOf(u8, buf[0..writer.end], "zix: sudo password required") != null,
     );
+    try std.testing.expect(std.mem.indexOf(u8, buf[0..writer.end], "\x1b]9;4;4") != null);
+    try std.testing.expectEqual(@as(u32, 2), sudo_runs);
 }
 
 test "execute aborts when staging changes is declined" {
@@ -972,6 +1008,23 @@ test "execute skips the diff when it is not selected" {
     try execute(std.testing.io, &writer, config, &commands, testDeps(arena.allocator(), &environ));
 }
 
+test "cleanup has its own title" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var environ = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ.deinit();
+    resetMocks();
+
+    var config = testConfig("host");
+    config.yes = true;
+    config.only = std.EnumSet(Step).initOne(.cleanup);
+    const commands = try buildCommands(config, .ng, arena.allocator());
+    var buf: [512]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    try execute(std.testing.io, &writer, config, &commands, testDeps(arena.allocator(), &environ));
+    try std.testing.expectEqualStrings("Cleanup", last_title);
+}
+
 test "errorMessage and exitCode cover every variant" {
     try std.testing.expectEqualStrings("Invalid arguments", errorMessage(error.InvalidArgs));
     try std.testing.expectEqualStrings("Invalid configuration", errorMessage(error.InvalidConfig));
@@ -986,6 +1039,9 @@ test "errorMessage and exitCode cover every variant" {
     try std.testing.expectEqualStrings("Could not determine hostname; pass --hostname", errorMessage(error.HostnameUnknown));
     try std.testing.expectEqualStrings("Cleanup failed", errorMessage(error.CleanupFailed));
     try std.testing.expectEqualStrings("sudo authentication failed", errorMessage(error.SudoFailed));
+    try std.testing.expectEqualStrings("Command output exceeded the size limit", errorMessage(error.StreamTooLong));
+    try std.testing.expectEqualStrings("Required command not found", errorMessage(error.FileNotFound));
+    try std.testing.expectEqualStrings("Permission denied while running a command", errorMessage(error.AccessDenied));
     try std.testing.expectEqualStrings("Unexpected error", errorMessage(error.MockError));
 
     try std.testing.expectEqual(@as(u8, 2), exitCode(error.InvalidArgs));

@@ -1,13 +1,14 @@
 //! Terminal UI: titles, help, version, config display, prompts, and status
 //! messages. Also defines the `UserIo` port used by the workflow.
 //!
-//! All output uses `io.printTo` for immediate flush. `confirm` reads
-//! stdin byte-by-byte via posix.read to avoid buffering issues.
+//! All output uses `io.printTo` for immediate flush. `confirm` reads from an
+//! injected `std.Io.Reader`, so stdin is never hardcoded.
 
 const std = @import("std");
 const builtin = @import("builtin");
 const io = @import("io.zig");
 const Config = @import("../app/config.zig").Config;
+const Step = @import("../app/config.zig").Step;
 const equal = std.mem.eql;
 
 /// Maximum border width for printed titles.
@@ -17,7 +18,7 @@ const MAX_TITLE_LEN: u32 = 128;
 /// and `--dry-run` inject their own.
 pub const UserIo = struct {
     title: *const fn (*std.Io.Writer, []const u8) anyerror!void,
-    confirm: *const fn (*std.Io.Writer, bool, ?[]const u8) anyerror!bool,
+    confirm: *const fn (*std.Io.Reader, *std.Io.Writer, bool, ?[]const u8) anyerror!bool,
     success: *const fn (*std.Io.Writer, []const u8) anyerror!void,
     output: *const fn (*std.Io.Writer, []const u8) anyerror!void,
     config: *const fn (*std.Io.Writer, Config) anyerror!void,
@@ -25,9 +26,9 @@ pub const UserIo = struct {
 
 /// Production `UserIo` writing to the caller-provided writer.
 ///
-/// The stdin-reading `confirm` is replaced by a stub under `zig build test`:
-/// exercising it would require taking over fd 0, which the test runner's
-/// `--listen=-` protocol owns. `confirmAlloc` covers the parsing logic.
+/// The stdin-reading `confirm` is replaced by a stub under `zig build test`
+/// because the test runner owns stdin; `confirm` itself is tested with a
+/// fixed `std.Io.Reader`.
 pub const terminal = UserIo{
     .title = printTitle,
     .confirm = if (builtin.is_test) testConfirm else confirm,
@@ -36,7 +37,12 @@ pub const terminal = UserIo{
     .config = configPrint,
 };
 
-fn testConfirm(_: *std.Io.Writer, _: bool, _: ?[]const u8) anyerror!bool {
+fn testConfirm(
+    _: *std.Io.Reader,
+    _: *std.Io.Writer,
+    _: bool,
+    _: ?[]const u8,
+) anyerror!bool {
     return true;
 }
 
@@ -160,16 +166,36 @@ pub fn configPrint(writer: *std.Io.Writer, config: Config) !void {
     try printConfigLine(writer, "keep", config.keep);
     if (config.jobs) |jobs| try printConfigLine(writer, "jobs", jobs);
     if (config.cores) |cores| try printConfigLine(writer, "cores", cores);
+    if (config.only) |steps| {
+        var only_buf: [64]u8 = undefined;
+        const only = onlyStepNames(&only_buf, steps);
+        if (only.len > 0) try printConfigLine(writer, "only", only);
+    }
     try printConfigLine(writer, "update", config.runs(.flake));
     try printConfigLine(writer, "diff", config.runs(.diff));
     if (config.dry_run) try printConfigLine(writer, "dry-run", config.dry_run);
 }
 
-/// Reads a yes/no answer from stdin using raw posix.read.
+/// Comma-separated names of the selected steps, in enum order.
+fn onlyStepNames(buf: []u8, steps: std.EnumSet(Step)) []const u8 {
+    var writer = std.Io.Writer.fixed(buf);
+    var first = true;
+    inline for (@typeInfo(Step).@"enum".field_names) |name| {
+        if (steps.contains(@field(Step, name))) {
+            if (!first) writer.writeByte(',') catch return "";
+            writer.writeAll(name) catch return "";
+            first = false;
+        }
+    }
+    return buf[0..writer.end];
+}
+
+/// Reads a yes/no answer from `reader`.
 /// Shows a prompt with optional message and (Y/n) or (y/N) hint.
 /// Returns true for yes, false for no. Falls back to `default_value`
 /// for empty input.
 pub fn confirm(
+    reader: *std.Io.Reader,
     writer: *std.Io.Writer,
     default_value: bool,
     msg: ?[]const u8,
@@ -181,41 +207,11 @@ pub fn confirm(
 
     try writeConfirmPrompt(writer, default_value, msg);
 
-    var buf: [256]u8 = undefined;
-    var byte_index: usize = 0;
-    while (byte_index < buf.len - 1) {
-        // Wait for readability instead of spinning when stdin is non-blocking.
-        var fds = [_]std.posix.pollfd{
-            .{ .fd = 0, .events = std.posix.POLL.IN, .revents = 0 },
-        };
-        _ = std.posix.poll(&fds, -1) catch |err| return err;
-        const bytes_read = std.posix.read(0, buf[byte_index .. byte_index + 1]) catch |err| {
-            if (err == error.WouldBlock) continue;
-            return err;
-        };
-        if (bytes_read == 0) return false;
-        if (buf[byte_index] == '\n') {
-            return parseConfirmResponse(
-                buf[0..byte_index],
-                default_value,
-            );
-        }
-        byte_index += 1;
-    }
-    // Overlong answer: discard the rest of the line so the next prompt is not
-    // answered with this line's leftover bytes.
-    drainLine();
-    return false;
-}
-
-/// Discards stdin up to and including the next newline (or EOF).
-fn drainLine() void {
-    var buf: [64]u8 = undefined;
-    while (true) {
-        const bytes_read = std.posix.read(0, &buf) catch return;
-        if (bytes_read == 0) return;
-        if (std.mem.indexOfScalar(u8, buf[0..bytes_read], '\n') != null) return;
-    }
+    const line = reader.takeDelimiterExclusive('\n') catch |err| switch (err) {
+        error.EndOfStream, error.StreamTooLong => return false,
+        else => return err,
+    };
+    return parseConfirmResponse(line, default_value);
 }
 
 /// Writes the confirm prompt with colored (Y/n) or (y/N) hint.
@@ -246,28 +242,6 @@ fn parseConfirmResponse(line: []const u8, default_value: bool) bool {
     if (trimmed.len == 0) return default_value;
     const lower = std.ascii.lowerString(&lower_buf, trimmed);
     return equal(u8, lower, "y") or equal(u8, lower, "yes");
-}
-
-/// Allocating variant of confirm that reads from a `std.Io.Reader`.
-/// Used in tests where stdin is replaced with a fixed buffer.
-fn confirmAlloc(
-    reader: *std.Io.Reader,
-    writer: *std.Io.Writer,
-    default_value: bool,
-    msg: ?[]const u8,
-) !bool {
-    if (msg) |value| std.debug.assert(value.len > 0);
-
-    io.progressPause(writer);
-    defer io.progressResume(writer);
-
-    try writeConfirmPrompt(writer, default_value, msg);
-
-    const line = reader.takeDelimiterExclusive('\n') catch |err| {
-        if (err == error.EndOfStream) return false;
-        return err;
-    };
-    return parseConfirmResponse(line, default_value);
 }
 
 // --- Tests ---
@@ -416,6 +390,7 @@ test "configPrint shows the effective steps under --only" {
     var writer = std.Io.Writer.fixed(&buf);
     try configPrint(&writer, config);
     const out = buf[0..writer.end];
+    try std.testing.expect(std.mem.indexOf(u8, out, "only = diff") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "update = false") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "diff = true") != null);
 }
@@ -485,7 +460,8 @@ test "terminal port exposes production functions" {
     var buf: [4096]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buf);
     try terminal.title(&writer, "T");
-    _ = try terminal.confirm(&writer, true, null);
+    var reader = std.Io.Reader.fixed("y\n");
+    _ = try terminal.confirm(&reader, &writer, true, null);
     try terminal.success(&writer, "s");
     try terminal.output(&writer, "o");
     try terminal.config(&writer, Config{
@@ -527,7 +503,7 @@ test "confirm responses" {
         var wbuf: [512]u8 = undefined;
         var writer = std.Io.Writer.fixed(&wbuf);
         var reader = std.Io.Reader.fixed(tc.input);
-        const result = try confirmAlloc(
+        const result = try confirm(
             &reader,
             &writer,
             tc.default_value,
@@ -548,7 +524,7 @@ test "confirm pauses and resumes progress" {
     }
 
     var reader = std.Io.Reader.fixed("y\n");
-    try std.testing.expect(try confirmAlloc(&reader, &writer, true, "Sure?"));
+    try std.testing.expect(try confirm(&reader, &writer, true, "Sure?"));
     const out = buf[0..writer.end];
     try std.testing.expect(std.mem.indexOf(u8, out, "\x1b]9;4;4") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\x1b]9;4;3") != null);
@@ -558,7 +534,7 @@ test "confirm empty input hits EndOfStream" {
     var wbuf: [512]u8 = undefined;
     var writer = std.Io.Writer.fixed(&wbuf);
     var reader = std.Io.Reader.fixed("");
-    const result = try confirmAlloc(&reader, &writer, true, null);
+    const result = try confirm(&reader, &writer, true, null);
     try std.testing.expectEqual(false, result);
 }
 

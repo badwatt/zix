@@ -105,6 +105,13 @@ pub const Config = struct {
         };
     }
 
+    /// Whether any selected step changes the repository or the system.
+    /// `diff` is read-only, so `--only diff` needs no confirmation.
+    pub fn mutates(self: Config) bool {
+        return self.runs(.pull) or self.runs(.flake) or self.runs(.stage) or
+            self.runs(.rebuild) or self.runs(.cleanup);
+    }
+
     /// Expands a leading `~` (alone or followed by `/`) to `home`. Returns
     /// `path` unchanged for `~user` forms, paths not starting with `~`, or
     /// when `home` is null.
@@ -204,6 +211,15 @@ test "step names round-trip and update aliases flake" {
     try std.testing.expectEqual(Step.flake, Step.fromName("update").?);
     try std.testing.expectEqual(@as(?Step, null), Step.fromName("bogus"));
     try std.testing.expectEqualStrings("pull,flake,stage,rebuild,cleanup,diff", Step.names);
+}
+
+test "mutates is true only for mutating steps" {
+    var config = Config.defaults("nixos");
+    try std.testing.expect(config.mutates());
+    config.only = std.EnumSet(Step).initOne(.diff);
+    try std.testing.expect(!config.mutates());
+    config.only = std.EnumSet(Step).initOne(.cleanup);
+    try std.testing.expect(config.mutates());
 }
 
 test "expandTilde expands home" {

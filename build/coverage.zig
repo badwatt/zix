@@ -58,11 +58,17 @@ pub fn main(init: std.process.Init) !void {
             summary.covered,
             summary.total,
         });
+        if (!isComplete(summary)) std.process.exit(1);
         return;
     }
 
     std.debug.print("No coverage data found\n", .{});
     std.process.exit(1);
+}
+
+/// True only when every instrumented line was covered.
+fn isComplete(summary: Summary) bool {
+    return summary.total > 0 and summary.covered == summary.total;
 }
 
 /// Extracts the summary fields from a parsed `coverage.json` value. Returns
@@ -110,6 +116,12 @@ test "summarize parses a kcov summary" {
     try std.testing.expectEqual(@as(f64, 99.5), summary.percent);
     try std.testing.expectEqual(@as(i64, 199), summary.covered);
     try std.testing.expectEqual(@as(i64, 200), summary.total);
+}
+
+test "isComplete requires every line and a non-empty report" {
+    try std.testing.expect(isComplete(.{ .percent = 100, .covered = 10, .total = 10 }));
+    try std.testing.expect(!isComplete(.{ .percent = 99.9, .covered = 9, .total = 10 }));
+    try std.testing.expect(!isComplete(.{ .percent = 100, .covered = 0, .total = 0 }));
 }
 
 test "summarize rejects malformed documents" {

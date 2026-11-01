@@ -38,6 +38,7 @@ pub fn main(init: std.process.Init) !void {
 /// and writes the response with appropriate `Content-Type` and
 /// `Connection: close` headers.
 fn handleClient(io: Io, allocator: std.mem.Allocator, stream: Io.net.Stream, serve_dir: []const u8) !void {
+    defer stream.close(io);
     var rbuf: [8192]u8 = undefined;
     var net_reader = stream.reader(io, &rbuf);
     var reader = &net_reader.interface;
@@ -145,6 +146,34 @@ fn respond(io: Io, stream: Io.net.Stream, status: []const u8, body: []const u8) 
 }
 
 // --- Tests ---
+
+test "handleClient closes the connection" {
+    const io = std.testing.io;
+    var fds: [2]std.posix.fd_t = undefined;
+    const rc = std.os.linux.socketpair(
+        std.os.linux.AF.UNIX,
+        std.os.linux.SOCK.STREAM,
+        0,
+        &fds,
+    );
+    switch (std.posix.errno(rc)) {
+        .SUCCESS => {},
+        else => return error.SocketPairFailed,
+    }
+
+    var client = std.Io.File{
+        .handle = fds[1],
+        .flags = .{ .nonblocking = false },
+    };
+    defer client.close(io);
+    try client.writeStreamingAll(io, "GET /missing HTTP/1.0\r\n\r\n");
+
+    const stream = Io.net.Stream{ .socket = .{ .handle = fds[0], .address = undefined } };
+    try handleClient(io, std.testing.allocator, stream, "/tmp");
+
+    const check = std.os.linux.fcntl(fds[0], std.os.linux.F.GETFD, 0);
+    try std.testing.expectEqual(std.posix.E.BADF, std.posix.errno(check));
+}
 
 test "resolvePath appends index.html to directory paths" {
     var buf: [128]u8 = undefined;

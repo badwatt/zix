@@ -114,6 +114,26 @@ test "dry run prints commands without executing" {
     try std.testing.expectEqual(@as(i32, 0), result.code());
     try std.testing.expect(std.mem.indexOf(u8, result.stdout, "$ ") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.stdout, "nixos-rebuild") != null);
+    // The read-only capability probe runs silently; it is not a preview line.
+    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "list-generations") == null);
+}
+
+test "dry run does not ask for confirmation" {
+    const result = try run(&.{ "--dry-run", "-n", "testhost", "-r", "/tmp" });
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(i32, 0), result.code());
+    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "$ ") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "Proceed?") == null);
+}
+
+test "read-only only-diff preview does not ask for confirmation" {
+    const result = try run(&.{
+        "--dry-run", "--only", "diff", "-n", "testhost", "-r", "/tmp",
+    });
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(i32, 0), result.code());
+    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "diff-closures") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "Proceed?") == null);
 }
 
 test "only flag runs the selected steps" {

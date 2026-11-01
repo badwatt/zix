@@ -38,10 +38,7 @@ pub fn run(
 
     const allocator = static_allocator.allocator();
     var deps_local = deps;
-
-    var hostname_buf: [std.posix.HOST_NAME_MAX]u8 = undefined;
-    const resolved = deps.resolve_hostname(cli_io, allocator, deps.environ, &hostname_buf);
-    var config = Config.defaults(resolved);
+    var config = Config.defaults(null);
 
     const intent = parse(args, &config, deps.err_writer);
     switch (intent) {
@@ -59,11 +56,17 @@ pub fn run(
         return cli.Error.InvalidConfig;
     }
 
-    // Abort before any side effect (pull, flake update, staging) when the
-    // rebuild is selected and the hostname could not be resolved. A run that
-    // skips the rebuild (e.g. `--only diff`) does not need it.
+    // Resolve the hostname only when the rebuild needs it and `--hostname` was
+    // not supplied. Help, version, completions and read-only runs never touch
+    // it. Abort before any side effect when it cannot be resolved.
+    var hostname_buf: [std.posix.HOST_NAME_MAX]u8 = undefined;
     if (config.runs(.rebuild) and config.hostname == null) {
-        return cli.Error.HostnameUnknown;
+        config.hostname = deps.resolve_hostname(cli_io, allocator, deps.environ, &hostname_buf);
+        if (config.hostname == null) return cli.Error.HostnameUnknown;
+        if (config.validate()) |msg| {
+            printValidationError(deps.err_writer, msg);
+            return cli.Error.InvalidConfig;
+        }
     }
 
     // `--dry-run` swaps the command runner for one that only prints.
@@ -71,9 +74,11 @@ pub fn run(
     if (config.dry_run) deps_local.runner = dry.runner();
 
     // Probing the installed `nixos-rebuild` is only useful when the rebuild
-    // step runs; `--only diff` must not invoke it at all.
+    // step runs; `--only diff` must not invoke it at all. In a dry run the
+    // probe is still executed (read-only) so the preview uses real flags, but
+    // it goes through the real runner, not the command printer.
     const flavor = if (config.runs(.rebuild))
-        cli.detectFlavor(cli_io, deps_local)
+        cli.detectFlavor(cli_io, if (config.dry_run) deps else deps_local)
     else
         cmd.RebuildFlavor.classic;
     const commands = try cli.buildCommands(config, flavor, allocator);
@@ -267,6 +272,10 @@ fn parseShort(
     config: *Config,
     writer: *std.Io.Writer,
 ) ParseStep {
+    if (arg.len == 1) {
+        printParseError(writer, "Unknown flag \"-\"", .{});
+        return .{ .terminal = .invalid };
+    }
     for (arg[1..], 0..) |flag, index| {
         switch (flag) {
             'h' => return .{ .terminal = .help },
@@ -368,10 +377,12 @@ fn parseNumber(
     return num;
 }
 
-/// Formats and prints a parse error; overlong messages are dropped.
+/// Formats and prints a parse error; an overlong message falls back to a
+/// generic diagnostic instead of printing nothing.
 fn printParseError(writer: *std.Io.Writer, comptime fmt: []const u8, fmt_args: anytype) void {
     var buf: [256]u8 = undefined;
-    const msg = std.fmt.bufPrint(&buf, "Error: " ++ fmt, fmt_args) catch return;
+    const msg = std.fmt.bufPrint(&buf, "Error: " ++ fmt, fmt_args) catch
+        "Error: invalid argument";
     ui.printError(writer, msg) catch {};
 }
 
@@ -379,10 +390,12 @@ fn printParseError(writer: *std.Io.Writer, comptime fmt: []const u8, fmt_args: a
 
 /// Counts command-runner calls so tests can assert that nothing ran.
 var commands_run: u32 = 0;
+var resolve_calls: u32 = 0;
 
 const test_runner = cli.Deps{
     .allocator = std.testing.allocator,
     .runner = .{ .runFn = noopRun, .captureFn = noopCapture, .probeFn = noopProbe },
+    .stdin = std.Io.File.stdin(),
     .ui = .{
         .title = echoTitle,
         .confirm = yesConfirm,
@@ -401,7 +414,17 @@ fn noHostname(
     _: *std.process.Environ.Map,
     _: *[std.posix.HOST_NAME_MAX]u8,
 ) ?[]const u8 {
+    resolve_calls += 1;
     return null;
+}
+
+fn emptyHostname(
+    _: std.Io,
+    _: std.mem.Allocator,
+    _: *std.process.Environ.Map,
+    _: *[std.posix.HOST_NAME_MAX]u8,
+) ?[]const u8 {
+    return "";
 }
 
 fn noopRun(_: ?*anyopaque, _: std.Io, _: []const []const u8) anyerror!i32 {
@@ -427,7 +450,12 @@ fn echoTitle(writer: *std.Io.Writer, text: []const u8) anyerror!void {
 }
 fn noopStatus(_: *std.Io.Writer, _: []const u8) anyerror!void {}
 fn noopConfig(_: *std.Io.Writer, _: Config) anyerror!void {}
-fn yesConfirm(_: *std.Io.Writer, _: bool, _: ?[]const u8) anyerror!bool {
+fn yesConfirm(
+    _: *std.Io.Reader,
+    _: *std.Io.Writer,
+    _: bool,
+    _: ?[]const u8,
+) anyerror!bool {
     return true;
 }
 
@@ -704,6 +732,7 @@ test "parse rejects invalid input and reports it" {
         &.{ "zix", "--help=1" },
         &.{ "zix", "--nope=1" },
         &.{ "zix", "--no-color=1" },
+        &.{ "zix", "-" },
     };
     for (cases) |args| {
         var buf: [512]u8 = undefined;
@@ -713,7 +742,7 @@ test "parse rejects invalid input and reports it" {
     }
 }
 
-test "parse drops overlong error messages" {
+test "parse reports overlong error messages" {
     var buf: [512]u8 = undefined;
     var config = testConfig();
     var long_flag: [300]u8 = undefined;
@@ -721,6 +750,7 @@ test "parse drops overlong error messages" {
     @memset(long_flag[1..], 'x');
     const args = [_][]const u8{ "zix", &long_flag };
     try std.testing.expectEqual(intent_invalid, parseArgs(&args, &config, &buf));
+    try std.testing.expect(std.mem.indexOf(u8, &buf, "Error") != null);
 }
 
 test "run dispatches completions without running the workflow" {
@@ -737,6 +767,7 @@ test "run dispatches completions without running the workflow" {
     var static_allocator = StaticAllocator.init(fba.allocator());
     var buf: [8192]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buf);
+    resolve_calls = 0;
     try run(
         std.testing.io,
         &writer,
@@ -745,6 +776,7 @@ test "run dispatches completions without running the workflow" {
         &static_allocator,
     );
     try std.testing.expect(std.mem.indexOf(u8, &buf, "complete -F _zix zix") != null);
+    try std.testing.expectEqual(@as(u32, 0), resolve_calls);
 }
 
 test "run dispatches help and version without running the workflow" {
@@ -893,6 +925,28 @@ test "run with --only diff does not require a hostname" {
     try std.testing.expect(std.mem.indexOf(u8, &buf, "diff-closures") != null);
     // The rebuild was not selected, so `nixos-rebuild` is never probed.
     try std.testing.expect(std.mem.indexOf(u8, &buf, "nixos-rebuild") == null);
+}
+
+test "run rejects an empty resolved hostname" {
+    var environ = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ.deinit();
+    var ebuf: [1024]u8 = undefined;
+    var ewriter = std.Io.Writer.fixed(&ebuf);
+    var deps = test_runner;
+    deps.environ = &environ;
+    deps.err_writer = &ewriter;
+    deps.resolve_hostname = emptyHostname;
+
+    var memory: [16384]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&memory);
+    var static_allocator = StaticAllocator.init(fba.allocator());
+    var buf: [512]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    try std.testing.expectError(
+        cli.Error.InvalidConfig,
+        run(std.testing.io, &writer, &.{"zix"}, deps, &static_allocator),
+    );
+    try std.testing.expect(std.mem.indexOf(u8, &ebuf, "hostname cannot be empty") != null);
 }
 
 test "run rejects a missing hostname before any command runs" {
