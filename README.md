@@ -101,9 +101,9 @@ Tests run with the LLVM backend (`.use_llvm = true`) for accurate DWARF
 instrumentation. The build-time helpers in `build/` have their own unit tests
 (part of `zig build test`) but are not instrumented by kcov.
 
-CI runs `zig build fmt:check`, `zig build test` and `zig build coverage` on
-every push and pull request; the release tag job depends on the formatting and
-test checks.
+CI runs `zig build fmt:check` and `zig build test` on every push and pull
+request; the release tag job depends on the same checks. `zig build coverage`
+enforces the 100% threshold locally.
 
 ## Documentation
 
