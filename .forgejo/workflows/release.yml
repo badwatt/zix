@@ -13,6 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: https://github.com/actions/checkout@v6
+      # setup-zig reads .minimum_zig_version from build.zig.zon.
       - uses: https://github.com/mlugg/setup-zig@v2
       - run: zig build fmt:check
       - run: zig build test --summary all
@@ -42,25 +43,6 @@ jobs:
             echo "created=true" >> $GITHUB_OUTPUT
           fi
 
-  build:
-    needs: tag
-    if: needs.tag.outputs.created == 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        target: [x86_64-linux]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: https://github.com/actions/checkout@v6
-        with:
-          ref: ${{ needs.tag.outputs.version }}
-      - uses: https://github.com/mlugg/setup-zig@v2
-      - run: zig build -Doptimize=ReleaseSafe -Dtarget=${{ matrix.target }}
-      - uses: https://github.com/actions/upload-artifact@v7
-        with:
-          name: zix-${{ matrix.target }}
-          path: zig-out/bin/zix
-
   release:
     needs: tag
     if: needs.tag.outputs.created == 'true'
@@ -70,7 +52,7 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ needs.tag.outputs.version }}
-      - run: sudo apt-get update && sudo apt-get install -y xz-utils
+      # setup-zig reads .minimum_zig_version from build.zig.zon.
       - uses: https://github.com/mlugg/setup-zig@v2
       - run: |
           zig build -Doptimize=ReleaseSafe -Dtarget=x86_64-linux --prefix zig-out-x86_64 &
@@ -152,10 +134,6 @@ jobs:
             }
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - uses: https://github.com/actions/download-artifact@v8
-        with:
-          path: artifacts
-          pattern: zix-*
       - name: Generate checksums
         run: |
           cd zig-out/bin
