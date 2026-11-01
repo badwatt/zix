@@ -21,6 +21,7 @@ pub const DryRun = struct {
         ctx: ?*anyopaque,
         _: std.Io,
         _: std.mem.Allocator,
+        _: std.Io.Timeout,
         argv: process.Runner.Command,
     ) anyerror!process.Capture {
         try printCommand(state(ctx).writer, argv);

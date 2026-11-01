@@ -24,7 +24,7 @@ pub const Capture = struct {
 pub const Runner = struct {
     ctx: ?*anyopaque = null,
     runFn: *const fn (?*anyopaque, std.Io, Command) anyerror!i32,
-    captureFn: *const fn (?*anyopaque, std.Io, std.mem.Allocator, Command) anyerror!Capture,
+    captureFn: *const fn (?*anyopaque, std.Io, std.mem.Allocator, std.Io.Timeout, Command) anyerror!Capture,
     probeFn: *const fn (?*anyopaque, std.Io, Command) anyerror!i32,
 
     /// An argv list: program name first, then its arguments.
@@ -42,7 +42,18 @@ pub const Runner = struct {
         allocator: std.mem.Allocator,
         argv: Command,
     ) anyerror!Capture {
-        return self.captureFn(self.ctx, io, allocator, argv);
+        return self.captureTimed(io, allocator, argv, .none);
+    }
+
+    /// Like `capture`, but aborts the child after `timeout`.
+    pub fn captureTimed(
+        self: Runner,
+        io: std.Io,
+        allocator: std.mem.Allocator,
+        argv: Command,
+        timeout: std.Io.Timeout,
+    ) anyerror!Capture {
+        return self.captureFn(self.ctx, io, allocator, timeout, argv);
     }
 
     /// Runs `argv` with output discarded, returning its exit code. Used for
@@ -80,6 +91,7 @@ fn realCapture(
     _: ?*anyopaque,
     io: std.Io,
     allocator: std.mem.Allocator,
+    timeout: std.Io.Timeout,
     argv: Runner.Command,
 ) anyerror!Capture {
     std.debug.assert(argv.len > 0);
@@ -87,6 +99,7 @@ fn realCapture(
         .argv = argv,
         .stdout_limit = .limited(capture_stdout_limit),
         .stderr_limit = .limited(capture_stderr_limit),
+        .timeout = timeout,
     });
     return .{
         .code = termCode(result.term),
@@ -97,6 +110,14 @@ fn realCapture(
 
 fn realProbe(_: ?*anyopaque, io: std.Io, argv: Runner.Command) anyerror!i32 {
     return spawnAndWait(io, argv, .ignore);
+}
+
+/// Builds a monotonic duration timeout in milliseconds.
+pub fn timeoutMs(ms: i64) std.Io.Timeout {
+    return .{ .duration = .{
+        .raw = std.Io.Duration.fromMilliseconds(ms),
+        .clock = .awake,
+    } };
 }
 
 /// Exit code for a terminated child. A process killed or stopped by signal N
@@ -130,12 +151,12 @@ test "real run surfaces spawn errors" {
 test "real capture returns output and code" {
     const io = std.testing.io;
     const alloc = std.testing.allocator;
-    const ok = try realCapture(null, io, alloc, &.{ "echo", "hello" });
+    const ok = try realCapture(null, io, alloc, .none, &.{ "echo", "hello" });
     defer ok.deinit(alloc);
     try std.testing.expectEqual(@as(i32, 0), ok.code);
     try std.testing.expectEqualStrings("hello\n", ok.stdout);
 
-    const bad = try realCapture(null, io, alloc, &.{ "sh", "-c", "echo x; exit 3" });
+    const bad = try realCapture(null, io, alloc, .none, &.{ "sh", "-c", "echo x; exit 3" });
     defer bad.deinit(alloc);
     try std.testing.expectEqual(@as(i32, 3), bad.code);
     try std.testing.expectEqualStrings("x\n", bad.stdout);
@@ -145,8 +166,18 @@ test "real capture rejects output over the limit" {
     const io = std.testing.io;
     try std.testing.expectError(
         error.StreamTooLong,
-        realCapture(null, io, std.testing.allocator, &.{
+        realCapture(null, io, std.testing.allocator, .none, &.{
             "sh", "-c", "head -c 4194305 /dev/zero 1>&2",
+        }),
+    );
+}
+
+test "real capture honors the timeout" {
+    const io = std.testing.io;
+    try std.testing.expectError(
+        error.Timeout,
+        realCapture(null, io, std.testing.allocator, timeoutMs(500), &.{
+            "sh", "-c", "sleep 2",
         }),
     );
 }
@@ -155,7 +186,7 @@ test "real capture surfaces spawn errors" {
     const io = std.testing.io;
     try std.testing.expectError(
         error.FileNotFound,
-        realCapture(null, io, std.testing.allocator, &.{"zix_nonexistent_binary_xyz"}),
+        realCapture(null, io, std.testing.allocator, .none, &.{"zix_nonexistent_binary_xyz"}),
     );
 }
 
@@ -193,6 +224,7 @@ fn mockCapture(
     _: ?*anyopaque,
     _: std.Io,
     _: std.mem.Allocator,
+    _: std.Io.Timeout,
     _: Runner.Command,
 ) anyerror!Capture {
     return .{ .code = 0, .stdout = &.{}, .stderr = &.{} };

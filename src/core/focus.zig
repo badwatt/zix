@@ -29,6 +29,11 @@ const NiriFocus = struct { id: u64 };
 const HyprWindow = struct { address: []const u8, title: []const u8 };
 const HyprFocus = struct { address: []const u8 };
 
+const query_timeout = std.Io.Timeout{ .duration = .{
+    .raw = .{ .nanoseconds = 250 * std.time.ns_per_ms },
+    .clock = .awake,
+} };
+
 /// Returns true when the terminal running zix appears to be the focused
 /// window. Unknown compositors and query failures are treated as focused.
 pub fn isTerminalFocused(
@@ -76,7 +81,7 @@ fn track(
     io_mod.writeTitle(writer, nonce);
 
     var attempts: usize = 0;
-    while (attempts < 10) : (attempts += 1) {
+    while (attempts < 5) : (attempts += 1) {
         const found = switch (kind) {
             .niri => blk: {
                 const id = findNiriWindow(io, allocator, runner, nonce) orelse break :blk false;
@@ -100,7 +105,7 @@ fn findNiriWindow(
     runner: process.Runner,
     nonce: []const u8,
 ) ?u64 {
-    const result = runner.capture(io, allocator, &.{ "niri", "msg", "-j", "windows" }) catch return null;
+    const result = runner.captureTimed(io, allocator, &.{ "niri", "msg", "-j", "windows" }, query_timeout) catch return null;
     defer result.deinit(allocator);
     if (result.code != 0) return null;
 
@@ -118,7 +123,7 @@ fn findHyprWindow(
     runner: process.Runner,
     nonce: []const u8,
 ) bool {
-    const result = runner.capture(io, allocator, &.{ "hyprctl", "clients", "-j" }) catch return false;
+    const result = runner.captureTimed(io, allocator, &.{ "hyprctl", "clients", "-j" }, query_timeout) catch return false;
     defer result.deinit(allocator);
     if (result.code != 0) return false;
 
@@ -139,7 +144,7 @@ var tracked_address_buf: [64]u8 = undefined;
 const tracked_address_buffer_len = tracked_address_buf.len;
 
 fn focusedNiri(io: std.Io, allocator: std.mem.Allocator, runner: process.Runner, id: u64) bool {
-    const result = runner.capture(io, allocator, &.{ "niri", "msg", "-j", "focused-window" }) catch return true;
+    const result = runner.captureTimed(io, allocator, &.{ "niri", "msg", "-j", "focused-window" }, query_timeout) catch return true;
     defer result.deinit(allocator);
     if (result.code != 0) return true;
 
@@ -154,7 +159,7 @@ fn focusedHypr(
     runner: process.Runner,
     address: []const u8,
 ) bool {
-    const result = runner.capture(io, allocator, &.{ "hyprctl", "activewindow", "-j" }) catch return true;
+    const result = runner.captureTimed(io, allocator, &.{ "hyprctl", "activewindow", "-j" }, query_timeout) catch return true;
     defer result.deinit(allocator);
     if (result.code != 0) return true;
 
@@ -175,7 +180,7 @@ fn fallback(
         .niri => &.{ "niri", "msg", "-j", "focused-window" },
         .hyprland => &.{ "hyprctl", "activewindow", "-j" },
     };
-    const result = runner.capture(io, allocator, argv) catch return true;
+    const result = runner.captureTimed(io, allocator, argv, query_timeout) catch return true;
     defer result.deinit(allocator);
     if (result.code != 0) return true;
     return focusedApp(allocator, result.stdout, environ);
@@ -237,6 +242,7 @@ fn mockCapture(
     _: ?*anyopaque,
     _: std.Io,
     allocator: std.mem.Allocator,
+    _: std.Io.Timeout,
     argv: process.Runner.Command,
 ) anyerror!process.Capture {
     if (mock_error) return error.MockError;

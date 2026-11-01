@@ -94,6 +94,7 @@ fn handleClient(io: Io, allocator: std.mem.Allocator, stream: Io.net.Stream, ser
 /// appended; returns null when any segment is `..` (path traversal).
 fn resolvePath(raw_path: []const u8, buf: []u8) ?[]const u8 {
     const path = if (raw_path.len == 0) "/" else raw_path;
+    if (path[0] != '/') return null;
     if (isForbidden(path)) return null;
     if (path[path.len - 1] == '/') {
         return std.fmt.bufPrint(buf, "{s}index.html", .{path}) catch null;
@@ -186,6 +187,12 @@ test "resolvePath keeps file paths" {
     var buf: [128]u8 = undefined;
     try std.testing.expectEqualStrings("/index.html", resolvePath("/index.html", &buf).?);
     try std.testing.expectEqualStrings("/a/b.js", resolvePath("/a/b.js", &buf).?);
+}
+
+test "resolvePath rejects paths without a leading slash" {
+    var buf: [128]u8 = undefined;
+    try std.testing.expect(resolvePath("relative", &buf) == null);
+    try std.testing.expect(resolvePath("./relative", &buf) == null);
 }
 
 test "resolvePath rejects traversal segments" {

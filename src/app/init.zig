@@ -435,6 +435,7 @@ fn noopCapture(
     _: ?*anyopaque,
     _: std.Io,
     allocator: std.mem.Allocator,
+    _: std.Io.Timeout,
     _: []const []const u8,
 ) anyerror!@import("../core/process.zig").Capture {
     commands_run += 1;

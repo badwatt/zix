@@ -330,6 +330,7 @@ pub fn errorMessage(err: anyerror) []const u8 {
         error.StreamTooLong => "Command output exceeded the size limit",
         error.FileNotFound => "Required command not found",
         error.AccessDenied => "Permission denied while running a command",
+        error.Timeout => "Command timed out",
         else => "Unexpected error",
     };
 }
@@ -413,6 +414,7 @@ fn mockCapture(
     _: ?*anyopaque,
     _: std.Io,
     allocator: std.mem.Allocator,
+    _: std.Io.Timeout,
     argv: process.Runner.Command,
 ) anyerror!process.Capture {
     const code = if (capture_code_needle) |needle|
@@ -1042,6 +1044,7 @@ test "errorMessage and exitCode cover every variant" {
     try std.testing.expectEqualStrings("Command output exceeded the size limit", errorMessage(error.StreamTooLong));
     try std.testing.expectEqualStrings("Required command not found", errorMessage(error.FileNotFound));
     try std.testing.expectEqualStrings("Permission denied while running a command", errorMessage(error.AccessDenied));
+    try std.testing.expectEqualStrings("Command timed out", errorMessage(error.Timeout));
     try std.testing.expectEqualStrings("Unexpected error", errorMessage(error.MockError));
 
     try std.testing.expectEqual(@as(u8, 2), exitCode(error.InvalidArgs));

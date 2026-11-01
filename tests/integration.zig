@@ -171,7 +171,7 @@ test "unknown only step exits with code 2" {
     try std.testing.expect(std.mem.indexOf(u8, result.stderr, "Unknown step") != null);
 }
 
-test "only diff works without a detected hostname" {
+test "only diff runs with an explicit hostname" {
     const result = try run(&.{
         "--dry-run", "-y", "-n", "unknown", "-r", "/tmp", "--only", "diff",
     });
