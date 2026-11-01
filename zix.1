@@ -89,12 +89,18 @@ closed stdin is never treated as a confirmation.
 .SH TERMINAL FEEDBACK
 When standard output is a terminal and \fBTERM\fR is not \fBdumb\fR,
 \fBzix\fR reports an indeterminate progress bar with the \fBOSC 9;4\fR
-sequence (supported by Ghostty, iTerm2 and WezTerm), pauses it while a prompt
-waits, and clears it when the run ends. It also emits a desktop notification
-(\fBOSC 9\fR) and a bell when a confirmation is needed, when \fBsudo\fR may
-ask for a password, and when the run finishes, fails or is aborted.
-Redirecting standard output disables these sequences. \fBNO_COLOR\fR only
-affects colours.
+sequence (supported by Ghostty, iTerm2 and WezTerm), refreshes it while long
+commands run, pauses it while a prompt waits, and clears it when the run ends.
+It also emits a desktop notification (\fBOSC 9\fR) and a bell, but only when
+the terminal is not the focused window: when a confirmation is needed, right
+before \fBsudo\fR asks for a password, and when the run finishes, fails or is
+aborted. Focus is detected through niri or Hyprland IPC; on other compositors
+\fBzix\fR stays quiet.
+.PP
+When a password is required, \fBzix\fR validates it with \fBsudo \-v\fR
+before the rebuild, so the prompt appears at a controlled point instead of in
+the middle of the build. Redirecting standard output disables the control
+sequences. \fBNO_COLOR\fR only affects colours.
 .SH EXIT STATUS
 .TP
 .B 0

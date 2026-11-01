@@ -13,6 +13,7 @@ const Config = @import("config.zig").Config;
 const Step = @import("config.zig").Step;
 const hostname_mod = @import("hostname.zig");
 const io_mod = @import("../core/io.zig");
+const focus = @import("../core/focus.zig");
 
 /// Errors the workflow surfaces so `main` can pick an exit code.
 pub const Error = error{
@@ -28,6 +29,7 @@ pub const Error = error{
     RebuildSignaled,
     HostnameUnknown,
     CleanupFailed,
+    SudoFailed,
 };
 
 /// Injected dependencies: a capture allocator, the command runner, the user
@@ -50,6 +52,13 @@ pub const Deps = struct {
         *std.process.Environ.Map,
         *[std.posix.HOST_NAME_MAX]u8,
     ) ?[]const u8 = hostname_mod.resolve,
+    /// Best-effort terminal focus check; injectable so tests can force a state.
+    is_focused: *const fn (
+        std.Io,
+        std.mem.Allocator,
+        *std.process.Environ.Map,
+        process.Runner,
+    ) bool = focus.isTerminalFocused,
 };
 
 /// Pre-built argv commands. Allocation happens in `buildCommands`; afterwards
@@ -119,17 +128,20 @@ pub fn execute(
     try deps.ui.title(writer, "ZIX Configuration");
     try deps.ui.config(writer, config);
 
-    if (!config.yes and !(try deps.ui.confirm(writer, true, null))) {
-        try deps.ui.output(writer, "Aborted.\n");
-        io_mod.notify(writer, "zix: aborted");
-        return;
+    if (!config.yes) {
+        notifyIfUnfocused(io, writer, config, deps, "zix: confirmation required");
+        if (!(try deps.ui.confirm(writer, true, null))) {
+            try deps.ui.output(writer, "Aborted.\n");
+            notifyIfUnfocused(io, writer, config, deps, "zix: aborted");
+            return;
+        }
     }
 
     io_mod.progressStart(writer);
     defer io_mod.progressStop(writer);
     errdefer {
         io_mod.progressStop(writer);
-        io_mod.notify(writer, "zix: failed");
+        notifyIfUnfocused(io, writer, config, deps, "zix: failed");
     }
 
     if (config.runs(.pull)) try pull(io, writer, commands, deps);
@@ -137,13 +149,14 @@ pub fn execute(
     if (config.runs(.flake)) try flakeUpdate(io, writer, commands, deps);
 
     if (config.runs(.stage) and !try stage(io, writer, config, commands, deps)) {
-        io_mod.notify(writer, "zix: aborted");
+        notifyIfUnfocused(io, writer, config, deps, "zix: aborted");
         return;
     }
+
+    const uses_sudo = config.runs(.rebuild) or config.runs(.cleanup);
+    if (uses_sudo) try ensureSudo(io, writer, config, deps);
+
     if (config.runs(.rebuild)) {
-        if (!config.dry_run and sudoNeedsPassword(io, deps)) {
-            io_mod.notify(writer, "zix: sudo may ask for your password");
-        }
         const argv = commands.nix_rebuild orelse unreachable;
         try rebuild(io, writer, argv.slice(), deps);
     }
@@ -152,7 +165,29 @@ pub fn execute(
     if (config.runs(.diff)) try showDiff(io, writer, commands, deps);
 
     io_mod.progressStop(writer);
-    io_mod.notify(writer, "zix: finished");
+    notifyIfUnfocused(io, writer, config, deps, "zix: finished");
+}
+
+/// Notifies only when the terminal is not the focused window. Dry runs and
+/// non-interactive terminals stay quiet.
+fn notifyIfUnfocused(
+    io: std.Io,
+    writer: *std.Io.Writer,
+    config: Config,
+    deps: Deps,
+    msg: []const u8,
+) void {
+    if (config.dry_run or !io_mod.control_enabled) return;
+    if (deps.is_focused(io, deps.allocator, deps.environ, deps.runner)) return;
+    io_mod.notify(writer, msg);
+}
+
+/// Validates sudo up front when a password would be required, so the prompt
+/// happens where zix can announce it. Passwordless sudo is left untouched.
+fn ensureSudo(io: std.Io, writer: *std.Io.Writer, config: Config, deps: Deps) anyerror!void {
+    if (config.dry_run or !sudoNeedsPassword(io, deps)) return;
+    notifyIfUnfocused(io, writer, config, deps, "zix: sudo password required");
+    if (try deps.runner.run(io, &.{ "sudo", "-v" }) != 0) return Error.SudoFailed;
 }
 
 /// True when sudo would have to ask for a password. Read-only and
@@ -201,14 +236,17 @@ fn stage(
     try deps.ui.title(writer, "Git Changes");
     try deps.ui.output(writer, status.stdout);
 
-    if (!config.yes and !(try deps.ui.confirm(
-        writer,
-        true,
-        "Do you want to add these changes to the stage?",
-    ))) {
-        // Nothing was staged, so the rebuild would evaluate a stale flake.
-        try deps.ui.output(writer, "Changes not added to stage; aborting.\n");
-        return false;
+    if (!config.yes) {
+        notifyIfUnfocused(io, writer, config, deps, "zix: confirmation required");
+        if (!(try deps.ui.confirm(
+            writer,
+            true,
+            "Do you want to add these changes to the stage?",
+        ))) {
+            // Nothing was staged, so the rebuild would evaluate a stale flake.
+            try deps.ui.output(writer, "Changes not added to stage; aborting.\n");
+            return false;
+        }
     }
 
     if (try deps.runner.run(io, &commands.git_add) != 0) {
@@ -270,6 +308,7 @@ pub fn errorMessage(err: anyerror) []const u8 {
         error.RebuildSignaled => "nixos-rebuild was terminated by a signal; if the build ran out of memory, lower --cores/--jobs",
         error.HostnameUnknown => "Could not determine hostname; pass --hostname",
         error.CleanupFailed => "Cleanup failed",
+        error.SudoFailed => "sudo authentication failed",
         else => "Unexpected error",
     };
 }
@@ -383,8 +422,27 @@ fn mockConfirm(_: *std.Io.Writer, _: bool, _: ?[]const u8) anyerror!bool {
     return true;
 }
 
+fn alwaysUnfocused(
+    _: std.Io,
+    _: std.mem.Allocator,
+    _: *std.process.Environ.Map,
+    _: process.Runner,
+) bool {
+    return false;
+}
+
+fn alwaysFocused(
+    _: std.Io,
+    _: std.mem.Allocator,
+    _: *std.process.Environ.Map,
+    _: process.Runner,
+) bool {
+    return true;
+}
+
 fn testDeps(allocator: std.mem.Allocator, environ: *std.process.Environ.Map) Deps {
     return .{
+        .is_focused = alwaysUnfocused,
         .allocator = allocator,
         .runner = .{ .runFn = mockRun, .captureFn = mockCapture, .probeFn = mockProbe },
         .ui = .{
@@ -651,7 +709,49 @@ test "execute stages changes when confirmed" {
     try std.testing.expectEqualStrings("Changes added to git stage successfully", last_success);
 }
 
-test "execute notifies when sudo may ask for a password" {
+test "execute stays quiet when the terminal is focused" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var environ = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ.deinit();
+    resetMocks();
+    io_mod.control_enabled = true;
+    defer io_mod.control_enabled = false;
+
+    var config = testConfig("host");
+    config.yes = true;
+    const commands = try buildCommands(config, .ng, arena.allocator());
+    var deps = testDeps(arena.allocator(), &environ);
+    deps.is_focused = alwaysFocused;
+
+    var buf: [512]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    try execute(std.testing.io, &writer, config, &commands, deps);
+    try std.testing.expect(std.mem.indexOf(u8, buf[0..writer.end], "zix: finished") == null);
+}
+
+test "execute fails when sudo authentication fails" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var environ = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ.deinit();
+    resetMocks();
+    probe_needle = "sudo";
+    probe_needle_code = 1;
+    fail_needle = "sudo";
+
+    var config = testConfig("host");
+    config.yes = true;
+    const commands = try buildCommands(config, .ng, arena.allocator());
+    var buf: [512]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    try std.testing.expectError(
+        Error.SudoFailed,
+        execute(std.testing.io, &writer, config, &commands, testDeps(arena.allocator(), &environ)),
+    );
+}
+
+test "execute notifies when sudo asks for a password" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var environ = std.process.Environ.Map.init(std.testing.allocator);
@@ -669,7 +769,7 @@ test "execute notifies when sudo may ask for a password" {
     var writer = std.Io.Writer.fixed(&buf);
     try execute(std.testing.io, &writer, config, &commands, testDeps(arena.allocator(), &environ));
     try std.testing.expect(
-        std.mem.indexOf(u8, buf[0..writer.end], "zix: sudo may ask for your password") != null,
+        std.mem.indexOf(u8, buf[0..writer.end], "zix: sudo password required") != null,
     );
 }
 
@@ -693,6 +793,7 @@ test "execute aborts when staging changes is declined" {
     try execute(std.testing.io, &writer, config, &commands, testDeps(arena.allocator(), &environ));
     try std.testing.expectEqual(@as(u32, 2), confirm_count);
     try std.testing.expectEqualStrings("Changes not added to stage; aborting.\n", last_output);
+    try std.testing.expect(std.mem.indexOf(u8, buf[0..writer.end], "zix: confirmation required") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf[0..writer.end], "zix: aborted") != null);
 }
 
@@ -881,6 +982,7 @@ test "errorMessage and exitCode cover every variant" {
     try std.testing.expect(std.mem.indexOf(u8, errorMessage(error.RebuildSignaled), "signal") != null);
     try std.testing.expectEqualStrings("Could not determine hostname; pass --hostname", errorMessage(error.HostnameUnknown));
     try std.testing.expectEqualStrings("Cleanup failed", errorMessage(error.CleanupFailed));
+    try std.testing.expectEqualStrings("sudo authentication failed", errorMessage(error.SudoFailed));
     try std.testing.expectEqualStrings("Unexpected error", errorMessage(error.MockError));
 
     try std.testing.expectEqual(@as(u8, 2), exitCode(error.InvalidArgs));

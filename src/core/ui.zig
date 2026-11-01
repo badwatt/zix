@@ -178,7 +178,6 @@ pub fn confirm(
 
     io.progressPause(writer);
     defer io.progressResume(writer);
-    if (msg != null) io.notify(writer, "zix: waiting for confirmation");
 
     try writeConfirmPrompt(writer, default_value, msg);
 
@@ -261,7 +260,6 @@ fn confirmAlloc(
 
     io.progressPause(writer);
     defer io.progressResume(writer);
-    if (msg != null) io.notify(writer, "zix: waiting for confirmation");
 
     try writeConfirmPrompt(writer, default_value, msg);
 
@@ -539,7 +537,7 @@ test "confirm responses" {
     }
 }
 
-test "confirm pauses progress and notifies when a message is given" {
+test "confirm pauses and resumes progress" {
     io.control_enabled = true;
     var buf: [1024]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buf);
@@ -553,7 +551,6 @@ test "confirm pauses progress and notifies when a message is given" {
     try std.testing.expect(try confirmAlloc(&reader, &writer, true, "Sure?"));
     const out = buf[0..writer.end];
     try std.testing.expect(std.mem.indexOf(u8, out, "\x1b]9;4;4") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "zix: waiting for confirmation") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\x1b]9;4;3") != null);
 }
 

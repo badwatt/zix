@@ -95,6 +95,7 @@ test {
     _ = @import("core/commands.zig");
     _ = @import("core/ui.zig");
     _ = @import("core/process.zig");
+    _ = @import("core/focus.zig");
     _ = @import("core/dry_run.zig");
     _ = @import("core/static_allocator.zig");
     _ = @import("zon");

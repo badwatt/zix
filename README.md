@@ -174,13 +174,19 @@ them where each shell looks by default: `share/zsh/site-functions/_zix`,
 ### Terminal feedback
 
 When stdout is a terminal, zix reports an indeterminate progress bar through
-**OSC 9;4** (Ghostty, iTerm2, WezTerm, …), pauses it while waiting for an
-answer, and clears it when the run ends. It also sends a desktop notification
-(**OSC 9**) and a bell when a confirmation is needed, when `sudo` may ask for
-a password, and when the run finishes, fails or is aborted.
+**OSC 9;4** (Ghostty, iTerm2, WezTerm, …), refreshes it while long commands
+run, pauses it while waiting for an answer, and clears it when the run ends.
 
-Redirecting stdout or setting `TERM=dumb` disables these control sequences.
-`NO_COLOR` only affects colors, not progress or notifications.
+It also sends a desktop notification (**OSC 9**) and a bell, but **only when
+the terminal is not the focused window**: when a confirmation is needed, right
+before sudo asks for a password, and when the run finishes, fails or is
+aborted. Focus is detected through niri or Hyprland IPC; on other compositors
+zix stays quiet.
+
+If sudo needs a password, zix validates it before the rebuild (`sudo -v`) so
+the prompt happens at a controlled point instead of appearing in the middle of
+the build. Redirecting stdout or setting `TERM=dumb` disables the control
+sequences; `NO_COLOR` only affects colors.
 
 Exit codes: `0` success, `1` runtime failure, `2` invalid arguments or config,
 `141` when stdout is closed early (SIGPIPE convention, e.g. `zix | head`).
