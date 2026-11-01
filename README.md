@@ -181,7 +181,9 @@ It also sends a desktop notification (**OSC 9**) and a bell, but **only when
 the terminal is not the focused window**: when a confirmation is needed, right
 before sudo asks for a password, and when the run finishes, fails or is
 aborted. Focus is detected through niri or Hyprland IPC; on other compositors
-zix stays quiet.
+zix stays quiet. To tell apart several windows of the same terminal, zix
+briefly sets the window title while identifying the exact window; the next
+shell prompt restores it.
 
 If sudo needs a password, zix validates it before the rebuild (`sudo -v`) so
 the prompt happens at a controlled point instead of appearing in the middle of

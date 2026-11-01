@@ -95,7 +95,9 @@ It also emits a desktop notification (\fBOSC 9\fR) and a bell, but only when
 the terminal is not the focused window: when a confirmation is needed, right
 before \fBsudo\fR asks for a password, and when the run finishes, fails or is
 aborted. Focus is detected through niri or Hyprland IPC; on other compositors
-\fBzix\fR stays quiet.
+\fBzix\fR stays quiet. To tell apart several windows of the same terminal,
+\fBzix\fR briefly sets the window title while identifying the exact window;
+the next shell prompt restores it.
 .PP
 When a password is required, \fBzix\fR validates it with \fBsudo \-v\fR
 before the rebuild, so the prompt appears at a controlled point instead of in

@@ -58,6 +58,7 @@ pub const Deps = struct {
         std.mem.Allocator,
         *std.process.Environ.Map,
         process.Runner,
+        *std.Io.Writer,
     ) bool = focus.isTerminalFocused,
 };
 
@@ -178,7 +179,7 @@ fn notifyIfUnfocused(
     msg: []const u8,
 ) void {
     if (config.dry_run or !io_mod.control_enabled) return;
-    if (deps.is_focused(io, deps.allocator, deps.environ, deps.runner)) return;
+    if (deps.is_focused(io, deps.allocator, deps.environ, deps.runner, writer)) return;
     io_mod.notify(writer, msg);
 }
 
@@ -427,6 +428,7 @@ fn alwaysUnfocused(
     _: std.mem.Allocator,
     _: *std.process.Environ.Map,
     _: process.Runner,
+    _: *std.Io.Writer,
 ) bool {
     return false;
 }
@@ -436,6 +438,7 @@ fn alwaysFocused(
     _: std.mem.Allocator,
     _: *std.process.Environ.Map,
     _: process.Runner,
+    _: *std.Io.Writer,
 ) bool {
     return true;
 }
