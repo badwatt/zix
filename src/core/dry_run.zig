@@ -38,16 +38,39 @@ pub const DryRun = struct {
     }
 };
 
-/// Writes `$ prog arg1 arg2 …` and flushes.
+/// Writes `$ prog arg1 arg2 …` and flushes. Arguments that are not simple
+/// shell words are single-quoted so the preview is copy-pasteable.
 pub fn printCommand(writer: *std.Io.Writer, argv: []const []const u8) !void {
     std.debug.assert(argv.len > 0);
     try writer.writeAll("$ ");
     for (argv, 0..) |arg, i| {
         if (i != 0) try writer.writeByte(' ');
-        try writer.writeAll(arg);
+        try writeArg(writer, arg);
     }
     try writer.writeByte('\n');
     try writer.flush();
+}
+
+fn writeArg(writer: *std.Io.Writer, arg: []const u8) !void {
+    if (isSimpleWord(arg)) return writer.writeAll(arg);
+    try writer.writeByte('\'');
+    for (arg) |c| {
+        if (c == '\'') {
+            try writer.writeAll("'\\''");
+        } else {
+            try writer.writeByte(c);
+        }
+    }
+    try writer.writeByte('\'');
+}
+
+fn isSimpleWord(arg: []const u8) bool {
+    if (arg.len == 0) return false;
+    for (arg) |c| switch (c) {
+        'a'...'z', 'A'...'Z', '0'...'9', '_', '-', '.', '/', ':', '@', '%', '+', '=', ',' => {},
+        else => return false,
+    };
+    return true;
 }
 
 // --- Tests ---
@@ -57,6 +80,16 @@ test "printCommand joins argv" {
     var writer = std.Io.Writer.fixed(&buf);
     try printCommand(&writer, &.{ "git", "-C", "/repo", "pull" });
     try std.testing.expectEqualStrings("$ git -C /repo pull\n", buf[0..writer.end]);
+}
+
+test "printCommand quotes non-simple arguments" {
+    var buf: [128]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    try printCommand(&writer, &.{ "echo", "hi there", "it's", "" });
+    try std.testing.expectEqualStrings(
+        "$ echo 'hi there' 'it'\\''s' ''\n",
+        buf[0..writer.end],
+    );
 }
 
 test "dry runner prints and returns success" {

@@ -29,7 +29,14 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("serving {s} at http://localhost:{d}\n", .{ serve_dir, port });
 
     while (true) {
-        const stream = server.accept(io) catch continue;
+        const stream = server.accept(io) catch {
+            // Avoid a hot loop on transient errors such as EMFILE.
+            std.Io.sleep(.{ .duration = .{
+                .raw = .fromMilliseconds(100),
+                .clock = .awake,
+            } }, io) catch {};
+            continue;
+        };
         handleClient(io, init.gpa, stream, serve_dir) catch continue;
     }
 }
