@@ -436,9 +436,14 @@ fn noopCapture(
     _: std.Io,
     allocator: std.mem.Allocator,
     _: std.Io.Timeout,
-    _: []const []const u8,
+    argv: []const []const u8,
 ) anyerror!@import("../core/process.zig").Capture {
     commands_run += 1;
+    for (argv) |arg| {
+        if (std.mem.eql(u8, arg, "--show-prefix")) {
+            return .{ .code = 0, .stdout = try allocator.dupe(u8, ""), .stderr = &.{} };
+        }
+    }
     return .{ .code = 0, .stdout = try allocator.dupe(u8, " M file\n"), .stderr = &.{} };
 }
 fn noopProbe(_: ?*anyopaque, _: std.Io, _: []const []const u8) anyerror!i32 {

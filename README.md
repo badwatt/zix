@@ -191,8 +191,13 @@ briefly sets the window title while identifying the exact window; the next
 shell prompt restores it.
 
 Focus is **window-level**: a background tab or pane inside the same terminal
-window counts as focused, and tmux/screen may swallow the title used for
-identification, so those cases do not notify.
+window may count as focused, and tmux/screen may swallow the title used for
+identification. If the focused compositor window belongs to a different
+application than the terminal emulator (typical for terminal workspace apps),
+zix treats the terminal as unfocused so the notification still reaches you.
+In addition to OSC 9, zix runs `notify-send` when available, so attention
+requests also reach the desktop when the terminal is hosted inside another
+app.
 
 If sudo needs a password, zix validates it before the rebuild (`sudo -v`) so
 the prompt happens at a controlled point instead of appearing in the middle of

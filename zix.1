@@ -1,4 +1,4 @@
-.TH ZIX 1 "" "zix 0.17.3" "User Commands"
+.TH ZIX 1 "" "zix 0.17.4" "User Commands"
 .SH NAME
 zix \- pull, stage, rebuild and clean up a NixOS system
 .SH SYNOPSIS
@@ -98,8 +98,13 @@ aborted. Focus is detected through niri or Hyprland IPC; on other compositors
 \fBzix\fR stays quiet. To tell apart several windows of the same terminal,
 \fBzix\fR briefly sets the window title while identifying the exact window;
 the next shell prompt restores it. Focus is window-level: a background tab or
-pane inside the same terminal window counts as focused, and tmux/screen may
-swallow the title used for identification, so those cases do not notify.
+pane inside the same terminal window may count as focused, and tmux/screen may
+swallow the title used for identification. If the focused compositor window
+belongs to a different application than the terminal emulator (typical for
+terminal workspace apps), \fBzix\fR treats the terminal as unfocused so the
+notification still reaches you. In addition to OSC 9, \fBzix\fR runs
+\fBnotify-send\fR when available, so attention requests also reach the desktop
+when the terminal is hosted inside another app.
 .PP
 When a password is required, \fBzix\fR validates it with \fBsudo \-v\fR
 before the rebuild, so the prompt appears at a controlled point instead of in

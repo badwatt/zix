@@ -24,8 +24,17 @@ pub const Capture = struct {
 pub const Runner = struct {
     ctx: ?*anyopaque = null,
     runFn: *const fn (?*anyopaque, std.Io, Command) anyerror!i32,
+    runEnvFn: ?*const fn (
+        ?*anyopaque,
+        std.Io,
+        Command,
+        ?*const std.process.Environ.Map,
+        []const u8,
+        []const u8,
+    ) anyerror!i32 = null,
     captureFn: *const fn (?*anyopaque, std.Io, std.mem.Allocator, std.Io.Timeout, Command) anyerror!Capture,
     probeFn: *const fn (?*anyopaque, std.Io, Command) anyerror!i32,
+    environ: ?*const std.process.Environ.Map = null,
 
     /// An argv list: program name first, then its arguments.
     pub const Command = []const []const u8;
@@ -56,6 +65,20 @@ pub const Runner = struct {
         return self.captureFn(self.ctx, io, allocator, timeout, argv);
     }
 
+    /// Runs `argv` with `var=value` added to the inherited environment.
+    pub fn runWithEnv(
+        self: Runner,
+        io: std.Io,
+        argv: Command,
+        key: []const u8,
+        value: []const u8,
+    ) anyerror!i32 {
+        if (self.runEnvFn) |run_env| {
+            return run_env(self.ctx, io, argv, self.environ, key, value);
+        }
+        return self.runFn(self.ctx, io, argv);
+    }
+
     /// Runs `argv` with output discarded, returning its exit code. Used for
     /// capability probes that must stay silent.
     pub fn probe(self: Runner, io: std.Io, argv: Command) anyerror!i32 {
@@ -64,7 +87,12 @@ pub const Runner = struct {
 };
 
 /// Production runner backed by `std.process`.
-pub const real = Runner{ .runFn = realRun, .captureFn = realCapture, .probeFn = realProbe };
+pub const real = Runner{
+    .runFn = realRun,
+    .runEnvFn = realRunEnv,
+    .captureFn = realCapture,
+    .probeFn = realProbe,
+};
 
 /// Upper bounds for captured stream output. A runaway command must not be able
 /// to exhaust memory; callers map `error.StreamTooLong` to a domain error.
@@ -72,19 +100,41 @@ pub const capture_stdout_limit = 16 * 1024 * 1024;
 pub const capture_stderr_limit = 4 * 1024 * 1024;
 
 /// Spawns `argv` with the given stdio and waits, returning its exit code.
-fn spawnAndWait(io: std.Io, argv: Runner.Command, stdio: std.process.SpawnOptions.StdIo) anyerror!i32 {
+fn spawnAndWait(
+    io: std.Io,
+    argv: Runner.Command,
+    stdio: std.process.SpawnOptions.StdIo,
+    environ: ?*const std.process.Environ.Map,
+) anyerror!i32 {
     std.debug.assert(argv.len > 0);
     var child = try std.process.spawn(io, .{
         .argv = argv,
         .stdin = stdio,
         .stdout = stdio,
         .stderr = stdio,
+        .environ_map = environ,
     });
     return termCode(try child.wait(io));
 }
 
 fn realRun(_: ?*anyopaque, io: std.Io, argv: Runner.Command) anyerror!i32 {
-    return spawnAndWait(io, argv, .inherit);
+    return spawnAndWait(io, argv, .inherit, null);
+}
+
+fn realRunEnv(
+    _: ?*anyopaque,
+    io: std.Io,
+    argv: Runner.Command,
+    environ: ?*const std.process.Environ.Map,
+    key: []const u8,
+    value: []const u8,
+) anyerror!i32 {
+    const parent = environ orelse return error.MissingEnvironment;
+    var child_env = std.process.Environ.Map.init(std.heap.page_allocator);
+    defer child_env.deinit();
+    try child_env.putAll(parent);
+    try child_env.put(key, value);
+    return spawnAndWait(io, argv, .inherit, &child_env);
 }
 
 fn realCapture(
@@ -109,7 +159,7 @@ fn realCapture(
 }
 
 fn realProbe(_: ?*anyopaque, io: std.Io, argv: Runner.Command) anyerror!i32 {
-    return spawnAndWait(io, argv, .ignore);
+    return spawnAndWait(io, argv, .ignore, null);
 }
 
 /// Builds a monotonic duration timeout in milliseconds.
@@ -187,6 +237,29 @@ test "real capture surfaces spawn errors" {
     try std.testing.expectError(
         error.FileNotFound,
         realCapture(null, io, std.testing.allocator, .none, &.{"zix_nonexistent_binary_xyz"}),
+    );
+}
+
+test "real runWithEnv adds the variable" {
+    var environ = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ.deinit();
+    var runner = real;
+    runner.environ = &environ;
+    try std.testing.expectEqual(
+        @as(i32, 0),
+        try runner.runWithEnv(
+            std.testing.io,
+            &.{ "sh", "-c", "test \"$K\" = v" },
+            "K",
+            "v",
+        ),
+    );
+}
+
+test "real runWithEnv requires a parent environment" {
+    try std.testing.expectError(
+        error.MissingEnvironment,
+        real.runWithEnv(std.testing.io, &.{"true"}, "K", "v"),
     );
 }
 

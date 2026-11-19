@@ -9,10 +9,10 @@ const std = @import("std");
 /// An argv list: program name first, then its arguments.
 pub const Command = []const []const u8;
 
-/// Returns the `git -C <repo> pull` argv.
-pub fn gitPull(repo: []const u8) [4][]const u8 {
+/// Returns the `git -C <repo> pull --ff-only` argv.
+pub fn gitPull(repo: []const u8) [5][]const u8 {
     std.debug.assert(repo.len > 0);
-    return .{ "git", "-C", repo, "pull" };
+    return .{ "git", "-C", repo, "pull", "--ff-only" };
 }
 
 /// Returns the `git -C <repo> status --porcelain` argv.
@@ -21,10 +21,12 @@ pub fn gitStatus(repo: []const u8) [5][]const u8 {
     return .{ "git", "-C", repo, "status", "--porcelain" };
 }
 
-/// Returns the `git -C <repo> rev-parse --is-inside-work-tree` argv.
+/// Returns the `git -C <repo> rev-parse --show-prefix` argv. Empty output
+/// means `repo` is the work-tree root; a non-empty prefix means it is a
+/// subdirectory of another repository.
 pub fn gitRevParse(repo: []const u8) [5][]const u8 {
     std.debug.assert(repo.len > 0);
-    return .{ "git", "-C", repo, "rev-parse", "--is-inside-work-tree" };
+    return .{ "git", "-C", repo, "rev-parse", "--show-prefix" };
 }
 
 /// Returns the `git -C <repo> add .` argv.
@@ -193,10 +195,10 @@ fn expectArgv(expected: []const []const u8, actual: []const []const u8) !void {
 }
 
 test "git commands use argv, not shell" {
-    try expectArgv(&.{ "git", "-C", "/repo", "pull" }, &gitPull("/repo"));
+    try expectArgv(&.{ "git", "-C", "/repo", "pull", "--ff-only" }, &gitPull("/repo"));
     try expectArgv(&.{ "git", "-C", "/repo", "status", "--porcelain" }, &gitStatus("/repo"));
     try expectArgv(
-        &.{ "git", "-C", "/repo", "rev-parse", "--is-inside-work-tree" },
+        &.{ "git", "-C", "/repo", "rev-parse", "--show-prefix" },
         &gitRevParse("/repo"),
     );
     try expectArgv(&.{ "git", "-C", "/repo", "add", "." }, &gitAdd("/repo"));
@@ -204,7 +206,7 @@ test "git commands use argv, not shell" {
 
 test "repo with spaces stays a single argument" {
     const repo = "/tmp/my dotfiles";
-    try expectArgv(&.{ "git", "-C", repo, "pull" }, &gitPull(repo));
+    try expectArgv(&.{ "git", "-C", repo, "pull", "--ff-only" }, &gitPull(repo));
 }
 
 test "nix commands use argv, not shell" {

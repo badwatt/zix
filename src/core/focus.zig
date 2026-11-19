@@ -45,6 +45,15 @@ pub fn isTerminalFocused(
 ) bool {
     const k = compositor(environ) orelse return true;
     kind = k;
+    // A terminal workspace app is one compositor window that hosts many
+    // terminals. If the focused app is not the terminal application itself,
+    // the zix pane cannot be the visible/focused surface, even when the window
+    // title happens to match. Notify in that case.
+    if (terminalAppId(environ)) |expected| {
+        if (focusedWindowAppMatches(io, allocator, runner, k, expected)) |matches| {
+            if (!matches) return false;
+        }
+    }
     if (!tracked_attempted) {
         tracked_attempted = true;
         track(io, allocator, runner, writer);
@@ -143,6 +152,40 @@ fn findHyprWindow(
 var tracked_address_buf: [64]u8 = undefined;
 const tracked_address_buffer_len = tracked_address_buf.len;
 
+/// Checks the currently focused compositor window against `expected`.
+fn focusedWindowAppMatches(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    runner: process.Runner,
+    kind_: Kind,
+    expected: []const u8,
+) ?bool {
+    const argv: []const []const u8 = switch (kind_) {
+        .niri => &.{ "niri", "msg", "-j", "focused-window" },
+        .hyprland => &.{ "hyprctl", "activewindow", "-j" },
+    };
+    const result = runner.captureTimed(io, allocator, argv, query_timeout) catch return null;
+    defer result.deinit(allocator);
+    if (result.code != 0) return null;
+    return appMatches(allocator, result.stdout, expected);
+}
+
+/// Compares a compositor window object with `expected`; null when unknown.
+fn appMatches(allocator: std.mem.Allocator, json: []const u8, expected: []const u8) ?bool {
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, json, .{}) catch return null;
+    defer parsed.deinit();
+    const object = switch (parsed.value) {
+        .object => |value| value,
+        else => return null,
+    };
+    const app = object.get("app_id") orelse object.get("class") orelse return null;
+    const app_id = switch (app) {
+        .string => |value| value,
+        else => return null,
+    };
+    return std.ascii.eqlIgnoreCase(app_id, expected);
+}
+
 fn focusedNiri(io: std.Io, allocator: std.mem.Allocator, runner: process.Runner, id: u64) bool {
     const result = runner.captureTimed(io, allocator, &.{ "niri", "msg", "-j", "focused-window" }, query_timeout) catch return true;
     defer result.deinit(allocator);
@@ -207,25 +250,14 @@ fn focusedApp(
     environ: *std.process.Environ.Map,
 ) bool {
     const expected = terminalAppId(environ) orelse return true;
-    const parsed = std.json.parseFromSlice(std.json.Value, allocator, json, .{}) catch return true;
-    defer parsed.deinit();
-
-    const object = switch (parsed.value) {
-        .object => |value| value,
-        else => return true,
-    };
-    const app = object.get("app_id") orelse object.get("class") orelse return true;
-    const app_id = switch (app) {
-        .string => |value| value,
-        else => return true,
-    };
-    return std.ascii.eqlIgnoreCase(app_id, expected);
+    return appMatches(allocator, json, expected) orelse true;
 }
 
 // --- Tests ---
 
 var mock_focused_id: u64 = 42;
 var mock_focused_address: []const u8 = "0xabc";
+var mock_focused_app: []const u8 = "com.mitchellh.ghostty";
 var mock_error: bool = false;
 var mock_windows_empty: bool = false;
 var mock_clients_empty: bool = false;
@@ -265,9 +297,17 @@ fn mockCapture(
                 .{ mock_focused_address, title_buf[0..title_len] },
             )
     else if (std.mem.eql(u8, argv[0], "niri"))
-        try std.fmt.allocPrint(allocator, "{{\"id\":{d},\"app_id\":\"firefox\"}}", .{mock_focused_id})
+        try std.fmt.allocPrint(
+            allocator,
+            "{{\"id\":{d},\"app_id\":\"{s}\"}}",
+            .{ mock_focused_id, mock_focused_app },
+        )
     else
-        try std.fmt.allocPrint(allocator, "{{\"address\":\"{s}\",\"class\":\"firefox\"}}", .{mock_focused_address});
+        try std.fmt.allocPrint(
+            allocator,
+            "{{\"address\":\"{s}\",\"class\":\"{s}\"}}",
+            .{ mock_focused_address, mock_focused_app },
+        );
     return .{ .code = 0, .stdout = out, .stderr = try allocator.dupe(u8, &.{}) };
 }
 
@@ -295,6 +335,7 @@ fn resetTracking() void {
     mock_error = false;
     mock_focused_id = 42;
     mock_focused_address = "0xabc";
+    mock_focused_app = "com.mitchellh.ghostty";
     mock_windows_empty = false;
     mock_clients_empty = false;
 }
@@ -353,6 +394,27 @@ test "focusedApp compares the compositor app id" {
     try std.testing.expect(focusedApp(std.testing.allocator, "not json", &environ));
 }
 
+test "a different focused app is unfocused before title tracking" {
+    resetTracking();
+    defer resetTracking();
+    var environ = testEnv(std.testing.allocator);
+    defer environ.deinit();
+    try environ.put("NIRI_SOCKET", "/run/user/1000/niri.sock");
+    try environ.put("TERM_PROGRAM", "ghostty");
+    mock_focused_app = "firefox";
+
+    var buf: [64]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    try std.testing.expect(!isTerminalFocused(
+        std.testing.io,
+        std.testing.allocator,
+        &environ,
+        mock_runner,
+        &writer,
+    ));
+    try std.testing.expectEqual(@as(usize, 0), writer.end);
+}
+
 test "niri tracks the exact window and compares its id" {
     resetTracking();
     defer resetTracking();
@@ -399,7 +461,7 @@ test "niri falls back to the app id when the window is not found" {
     var buf: [256]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buf);
     mock_windows_empty = true;
-    try std.testing.expect(!isTerminalFocused(std.testing.io, std.testing.allocator, &environ, mock_runner, &writer));
+    try std.testing.expect(isTerminalFocused(std.testing.io, std.testing.allocator, &environ, mock_runner, &writer));
 }
 
 test "hyprland falls back to the app id when the window is not found" {
@@ -413,7 +475,7 @@ test "hyprland falls back to the app id when the window is not found" {
     var buf: [256]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buf);
     mock_clients_empty = true;
-    try std.testing.expect(!isTerminalFocused(std.testing.io, std.testing.allocator, &environ, mock_runner, &writer));
+    try std.testing.expect(isTerminalFocused(std.testing.io, std.testing.allocator, &environ, mock_runner, &writer));
 }
 
 test "focus queries fall back to the app id on errors" {

@@ -67,7 +67,7 @@ pub const Deps = struct {
 /// Pre-built argv commands. Allocation happens in `buildCommands`; afterwards
 /// the workflow needs no allocation of its own (capture uses scratch memory).
 pub const Commands = struct {
-    git_pull: [4][]const u8,
+    git_pull: [5][]const u8,
     git_status: [5][]const u8,
     git_rev_parse: [5][]const u8,
     git_add: [5][]const u8,
@@ -188,6 +188,11 @@ fn notifyIfUnfocused(
     if (config.dry_run or !io_mod.control_enabled) return;
     if (deps.is_focused(io, deps.allocator, deps.environ, deps.runner, writer)) return;
     io_mod.notify(writer, msg);
+    // OSC 9 is terminal-local. A desktop notification reaches the user even
+    // when the terminal is a pane inside a larger workspace app.
+    _ = deps.runner.probe(io, &.{
+        "notify-send", "--app-name=zix", "--urgency=normal", "zix", msg,
+    }) catch {};
 }
 
 /// Validates sudo up front when a password would be required, so the prompt
@@ -210,10 +215,12 @@ fn sudoNeedsPassword(io: std.Io, deps: Deps) bool {
 /// Verifies the repo is a git work tree, then pulls.
 fn pull(io: std.Io, writer: *std.Io.Writer, commands: *const Commands, deps: Deps) anyerror!void {
     try deps.ui.title(writer, "Git Pull");
-    if (try deps.runner.probe(io, &commands.git_rev_parse) != 0) {
+    const prefix = try deps.runner.capture(io, deps.allocator, &commands.git_rev_parse);
+    defer prefix.deinit(deps.allocator);
+    if (prefix.code != 0 or std.mem.trim(u8, prefix.stdout, " \t\r\n").len != 0) {
         return Error.NotAGitRepo;
     }
-    if (try deps.runner.run(io, &commands.git_pull) != 0) {
+    if (try deps.runner.runWithEnv(io, &commands.git_pull, "GIT_TERMINAL_PROMPT", "0") != 0) {
         return Error.GitPullFailed;
     }
 }
@@ -350,12 +357,15 @@ var fail_code: i32 = 1;
 var capture_code: i32 = 0;
 var capture_code_needle: ?[]const u8 = null;
 var capture_output: []const u8 = "";
+var prefix_code: i32 = 0;
+var prefix_output: []const u8 = "";
 var capture_stderr: []const u8 = "";
 var probe_result: i32 = 0;
 var probe_error: bool = false;
 var probe_needle: ?[]const u8 = null;
 var probe_needle_code: i32 = 0;
 var sudo_runs: u32 = 0;
+var desktop_notifications: u32 = 0;
 var confirm_count: u32 = 0;
 var confirm_false_at: u32 = 0;
 var last_success: []const u8 = "";
@@ -379,12 +389,15 @@ fn resetMocks() void {
     capture_code = 0;
     capture_code_needle = null;
     capture_output = "";
+    prefix_code = 0;
+    prefix_output = "";
     capture_stderr = "";
     probe_result = 0;
     probe_error = false;
     probe_needle = null;
     probe_needle_code = 0;
     sudo_runs = 0;
+    desktop_notifications = 0;
     confirm_count = 0;
     confirm_false_at = 0;
     last_success = "";
@@ -417,16 +430,22 @@ fn mockCapture(
     _: std.Io.Timeout,
     argv: process.Runner.Command,
 ) anyerror!process.Capture {
-    const code = if (capture_code_needle) |needle|
+    const is_prefix = hasArg(argv, "--show-prefix");
+    const code = if (is_prefix)
+        prefix_code
+    else if (capture_code_needle) |needle|
         (if (hasArg(argv, needle)) capture_code else 0)
     else
         capture_code;
-    const out = try allocator.dupe(u8, capture_output);
+    const out = try allocator.dupe(u8, if (is_prefix) prefix_output else capture_output);
     const err = try allocator.dupe(u8, capture_stderr);
     return .{ .code = code, .stdout = out, .stderr = err };
 }
 
 fn mockProbe(_: ?*anyopaque, _: std.Io, argv: process.Runner.Command) anyerror!i32 {
+    if (argv.len > 0 and std.mem.eql(u8, argv[0], "notify-send")) {
+        desktop_notifications += 1;
+    }
     if (probe_needle) |needle| {
         if (hasArg(argv, needle)) return probe_needle_code;
     }
@@ -511,7 +530,7 @@ test "buildCommands populates every field" {
     const rebuild_argv = commands.nix_rebuild.?.slice();
     try std.testing.expectEqualStrings("git", commands.git_pull[0]);
     try std.testing.expectEqualStrings("--porcelain", commands.git_status[4]);
-    try std.testing.expectEqualStrings("--is-inside-work-tree", commands.git_rev_parse[4]);
+    try std.testing.expectEqualStrings("--show-prefix", commands.git_rev_parse[4]);
     try std.testing.expectEqualStrings(".", commands.git_add[4]);
     try std.testing.expectEqualStrings("/repo", commands.nix_update[4]);
     try std.testing.expectEqualStrings("/repo#host", rebuild_argv[5]);
@@ -606,6 +625,7 @@ test "execute happy path needs no confirmations when yes" {
     try std.testing.expect(std.mem.indexOf(u8, out, "\x1b]9;4;3") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\x1b]9;4;0") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "zix: finished") != null);
+    try std.testing.expect(desktop_notifications > 0);
 }
 
 test "execute frees every captured buffer" {
@@ -654,10 +674,30 @@ test "execute fails when repo is not a git work tree" {
     var environ = std.process.Environ.Map.init(std.testing.allocator);
     defer environ.deinit();
     resetMocks();
-    probe_result = 1;
+    prefix_code = 1;
 
     var config = testConfig("host");
     config.yes = true;
+    const commands = try buildCommands(config, .ng, arena.allocator());
+    var buf: [512]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    try std.testing.expectError(
+        Error.NotAGitRepo,
+        execute(std.testing.io, &writer, config, &commands, testDeps(arena.allocator(), &environ)),
+    );
+}
+
+test "execute rejects a subdirectory of a work tree" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var environ = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ.deinit();
+    resetMocks();
+    prefix_output = "nixos/\n";
+
+    var config = testConfig("host");
+    config.yes = true;
+    config.only = std.EnumSet(Step).initOne(.pull);
     const commands = try buildCommands(config, .ng, arena.allocator());
     var buf: [512]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buf);
@@ -767,6 +807,7 @@ test "execute stays quiet when the terminal is focused" {
     var writer = std.Io.Writer.fixed(&buf);
     try execute(std.testing.io, &writer, config, &commands, deps);
     try std.testing.expect(std.mem.indexOf(u8, buf[0..writer.end], "zix: finished") == null);
+    try std.testing.expectEqual(@as(u32, 0), desktop_notifications);
 }
 
 test "execute fails when sudo authentication fails" {

@@ -56,9 +56,11 @@ pub fn main(init: std.process.Init) !u8 {
 
     // Dependency injection: command execution, user I/O, scratch allocator,
     // and environment all flow through Deps for testability.
+    var runner = process.real;
+    runner.environ = init.environ_map;
     const deps = cli.Deps{
         .allocator = init.gpa,
-        .runner = process.real,
+        .runner = runner,
         .stdin = std.Io.File.stdin(),
         .ui = ui.terminal,
         .err_writer = &stderr_writer.interface,

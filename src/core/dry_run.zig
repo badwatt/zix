@@ -9,11 +9,29 @@ pub const DryRun = struct {
 
     /// Returns a `Runner` bound to this state.
     pub fn runner(self: *DryRun) process.Runner {
-        return .{ .ctx = self, .runFn = run, .captureFn = capture, .probeFn = probe };
+        return .{
+            .ctx = self,
+            .runFn = run,
+            .runEnvFn = runEnv,
+            .captureFn = capture,
+            .probeFn = probe,
+        };
     }
 
     fn run(ctx: ?*anyopaque, _: std.Io, argv: process.Runner.Command) anyerror!i32 {
         try printCommand(state(ctx).writer, argv);
+        return 0;
+    }
+
+    fn runEnv(
+        ctx: ?*anyopaque,
+        _: std.Io,
+        argv: process.Runner.Command,
+        _: ?*const std.process.Environ.Map,
+        key: []const u8,
+        value: []const u8,
+    ) anyerror!i32 {
+        try printCommandEnv(state(ctx).writer, argv, key, value);
         return 0;
     }
 
@@ -37,6 +55,28 @@ pub const DryRun = struct {
         return @ptrCast(@alignCast(ctx.?));
     }
 };
+
+/// Writes `$ KEY=value prog arg1 arg2 …` and flushes.
+fn printCommandEnv(
+    writer: *std.Io.Writer,
+    argv: []const []const u8,
+    key: []const u8,
+    value: []const u8,
+) !void {
+    std.debug.assert(argv.len > 0);
+    std.debug.assert(key.len > 0);
+    try writer.writeAll("$ ");
+    try writer.writeAll(key);
+    try writer.writeByte('=');
+    try writeArg(writer, value);
+    try writer.writeByte(' ');
+    for (argv, 0..) |arg, i| {
+        if (i != 0) try writer.writeByte(' ');
+        try writeArg(writer, arg);
+    }
+    try writer.writeByte('\n');
+    try writer.flush();
+}
 
 /// Writes `$ prog arg1 arg2 …` and flushes. Arguments that are not simple
 /// shell words are single-quoted so the preview is copy-pasteable.
@@ -90,6 +130,18 @@ test "printCommand quotes non-simple arguments" {
         "$ echo 'hi there' 'it'\\''s' ''\n",
         buf[0..writer.end],
     );
+}
+
+test "runWithEnv prints the environment assignment" {
+    var buf: [128]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    var dry = DryRun{ .writer = &writer };
+    const runner = dry.runner();
+    try std.testing.expectEqual(
+        @as(i32, 0),
+        try runner.runWithEnv(std.testing.io, &.{ "git", "pull" }, "K", "a b"),
+    );
+    try std.testing.expectEqualStrings("$ K='a b' git pull\n", buf[0..writer.end]);
 }
 
 test "dry runner prints and returns success" {
