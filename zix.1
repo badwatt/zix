@@ -91,6 +91,10 @@ When standard output is a terminal and \fBTERM\fR is not \fBdumb\fR,
 \fBzix\fR reports an indeterminate progress bar with the \fBOSC 9;4\fR
 sequence (supported by Ghostty, iTerm2 and WezTerm), refreshes it while long
 commands run, pauses it while a prompt waits, and clears it when the run ends.
+Supporting terminals also receive \fBOSC 7501\fR program-status reports
+(\fBworking\fR, \fBblocked:permission\fR, \fBblocked:auth\fR, \fBdone\fR,
+\fBerror\fR, \fBidle\fR) for tab badges. Neither is emitted during
+\fB\-\-dry\-run\fR.
 It also emits a desktop notification (\fBOSC 9\fR) and a bell, but only when
 the terminal is not the focused window: when a confirmation is needed, right
 before \fBsudo\fR asks for a password, and when the run finishes, fails or is
@@ -108,8 +112,10 @@ when the terminal is hosted inside another app.
 .PP
 When a password is required, \fBzix\fR validates it with \fBsudo \-v\fR
 before the rebuild, so the prompt appears at a controlled point instead of in
-the middle of the build. Redirecting standard output disables the control
-sequences. \fBNO_COLOR\fR only affects colours.
+the middle of the build, and keeps the cached ticket alive with
+\fBsudo \-n \-v\fR every 60 seconds while the run continues. Redirecting
+standard output disables the control sequences. \fBNO_COLOR\fR only affects
+colours.
 .SH EXIT STATUS
 .TP
 .B 0

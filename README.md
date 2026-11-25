@@ -141,7 +141,8 @@ Long options also accept `--flag=value` (`--repo=/path`, `--only=diff`).
 
 `--dry-run` prints each command instead of executing it. The read-only
 `nixos-rebuild` capability probe still runs so the preview uses the flavour
-actually installed; the probe is not printed.
+actually installed; the probe is not printed. A preview never emits progress
+or status sequences and never invokes `sudo`.
 
 ### Step selection
 
@@ -181,6 +182,9 @@ them where each shell looks by default: `share/zsh/site-functions/_zix`,
 When stdout is a terminal, zix reports an indeterminate progress bar through
 **OSC 9;4** (Ghostty, iTerm2, WezTerm, …), refreshes it while long commands
 run, pauses it while waiting for an answer, and clears it when the run ends.
+Supporting terminals also get **OSC 7501** program-status reports (`working`,
+`blocked:permission`, `blocked:auth`, `done`, `error`, `idle`) so the tab can
+badge what is happening. Neither is emitted during `--dry-run`.
 
 It also sends a desktop notification (**OSC 9**) and a bell, but **only when
 the terminal is not the focused window**: when a confirmation is needed, right
@@ -201,8 +205,9 @@ app.
 
 If sudo needs a password, zix validates it before the rebuild (`sudo -v`) so
 the prompt happens at a controlled point instead of appearing in the middle of
-the build. Redirecting stdout or setting `TERM=dumb` disables the control
-sequences; `NO_COLOR` only affects colors.
+the build, and keeps the cached ticket alive with `sudo -n -v` every 60 seconds
+while the run continues. Redirecting stdout or setting `TERM=dumb` disables
+the control sequences; `NO_COLOR` only affects colors.
 
 Exit codes: `0` success, `1` runtime failure, `2` invalid arguments or config,
 `141` when stdout is closed early (SIGPIPE convention, e.g. `zix | head`).
@@ -278,6 +283,7 @@ src/app/hostname.zig   Hostname resolution chain
 src/app/completions.zig Static completion scripts (bash, zsh, fish)
 src/core/commands.zig argv builders for git and nix
 src/core/io.zig      Formatted output + ANSI style constants
+src/core/status.zig  OSC 7501 program-status reports
 src/core/process.zig CommandRunner port + std.process implementation
 src/core/dry_run.zig --dry-run CommandRunner
 src/core/ui.zig      UserIo port + terminal implementation

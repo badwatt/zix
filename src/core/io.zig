@@ -4,6 +4,7 @@
 //! Style constants provide shorthand ANSI escape sequences.
 
 const std = @import("std");
+const status = @import("status.zig");
 
 // --- Formatting ---
 
@@ -217,6 +218,15 @@ pub fn writeTitle(writer: *std.Io.Writer, title: []const u8) void {
     writer.writeAll(title) catch return;
     writer.writeAll("\x1b\\") catch return;
     writer.flush() catch {};
+}
+
+/// Reports the current program state through ESC 7501. Supporting terminals
+/// badge the tab with working/blocked/done/error without extra text output.
+pub fn programStatus(writer: *std.Io.Writer, state: status.State, msg: []const u8) void {
+    if (!control_enabled) return;
+    lockControl();
+    defer unlockControl();
+    status.report(writer, state, msg) catch {};
 }
 
 /// Emits a desktop notification (OSC 9) and rings the bell so the user looks

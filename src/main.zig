@@ -95,6 +95,7 @@ test {
     _ = @import("app/completions.zig");
     _ = @import("app/cli.zig");
     _ = @import("core/io.zig");
+    _ = @import("core/status.zig");
     _ = @import("core/commands.zig");
     _ = @import("core/ui.zig");
     _ = @import("core/process.zig");

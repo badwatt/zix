@@ -62,6 +62,8 @@ pub const Deps = struct {
         process.Runner,
         *std.Io.Writer,
     ) bool = focus.isTerminalFocused,
+    /// How often the sudo ticket is renewed during a long rebuild.
+    sudo_refresh_interval_ms: u32 = 60_000,
 };
 
 /// Pre-built argv commands. Allocation happens in `buildCommands`; afterwards
@@ -128,25 +130,38 @@ pub fn execute(
 ) anyerror!void {
     std.debug.assert(config.repo.len > 0);
 
+    defer stopSudoKeepAlive();
+
     try deps.ui.title(writer, "ZIX Configuration");
     try deps.ui.config(writer, config);
+
+    const interactive = !config.dry_run;
+    if (interactive) io_mod.programStatus(writer, .working, "Starting the system update");
 
     var stdin_buf: [256]u8 = undefined;
     var stdin_reader = deps.stdin.reader(io, &stdin_buf);
 
     if (!config.yes and !config.dry_run and config.mutates()) {
+        io_mod.programStatus(writer, .blocked_permission, "Waiting for confirmation");
         notifyIfUnfocused(io, writer, config, deps, "zix: confirmation required");
         if (!(try deps.ui.confirm(&stdin_reader.interface, writer, true, null))) {
+            io_mod.programStatus(writer, .idle, "Nothing ran: the update was aborted");
             try deps.ui.output(writer, "Aborted.\n");
             notifyIfUnfocused(io, writer, config, deps, "zix: aborted");
             return;
         }
+        io_mod.programStatus(writer, .working, "Starting the system update");
     }
 
-    io_mod.progressStart(writer);
-    defer io_mod.progressStop(writer);
+    if (interactive) io_mod.progressStart(writer);
+    defer {
+        if (interactive) io_mod.progressStop(writer);
+    }
     errdefer {
-        io_mod.progressStop(writer);
+        if (interactive) {
+            io_mod.progressStop(writer);
+            io_mod.programStatus(writer, .failed, "System update failed");
+        }
         notifyIfUnfocused(io, writer, config, deps, "zix: failed");
     }
 
@@ -155,25 +170,72 @@ pub fn execute(
     if (config.runs(.flake)) try flakeUpdate(io, writer, commands, deps);
 
     if (config.runs(.stage) and !try stage(io, writer, &stdin_reader.interface, config, commands, deps)) {
+        if (interactive) io_mod.programStatus(writer, .idle, "Nothing ran: the update was aborted");
         notifyIfUnfocused(io, writer, config, deps, "zix: aborted");
         return;
     }
 
     if (config.runs(.rebuild)) {
         try ensureSudo(io, writer, config, deps);
+        if (interactive) io_mod.programStatus(writer, .working, "Rebuilding the system");
         const argv = commands.nix_rebuild orelse unreachable;
         try rebuild(io, writer, argv.slice(), deps);
     }
     if (config.runs(.cleanup)) {
         // Revalidate: the sudo ticket may have expired during a long rebuild.
         try ensureSudo(io, writer, config, deps);
+        if (interactive) io_mod.programStatus(writer, .working, "Cleaning up old generations");
         try cleanup(io, writer, commands, deps);
     }
 
     if (config.runs(.diff)) try showDiff(io, writer, commands, deps);
 
     io_mod.progressStop(writer);
+    if (interactive) io_mod.programStatus(writer, .done, "System update finished");
     notifyIfUnfocused(io, writer, config, deps, "zix: finished");
+}
+
+/// Keeps the sudo ticket fresh while a long rebuild runs. A detached thread
+/// would outlive the tests and the process; this one is joined by `execute`.
+var sudo_keepalive_thread: ?std.Thread = null;
+var sudo_keepalive_stop = std.atomic.Value(bool).init(true);
+
+/// Longest single poll slice, so stopping never waits for a full interval.
+const sudo_poll_slice_ms = 100;
+
+fn startSudoKeepAlive(io: std.Io, runner: process.Runner, interval_ms: u32) void {
+    if (sudo_keepalive_thread != null) return;
+    sudo_keepalive_stop.store(false, .release);
+    sudo_keepalive_thread = std.Thread.spawn(
+        .{},
+        sudoKeepAlive,
+        .{ io, runner, interval_ms },
+    ) catch blk: {
+        sudo_keepalive_stop.store(true, .release);
+        break :blk null;
+    };
+}
+
+fn stopSudoKeepAlive() void {
+    if (sudo_keepalive_thread) |thread| {
+        sudo_keepalive_stop.store(true, .release);
+        thread.join();
+        sudo_keepalive_thread = null;
+    }
+}
+
+fn sudoKeepAlive(io: std.Io, runner: process.Runner, interval_ms: u32) void {
+    var no_fds: [0]std.posix.pollfd = .{};
+    while (!sudo_keepalive_stop.load(.acquire)) {
+        var remaining = interval_ms;
+        while (remaining > 0) : (remaining -= @min(remaining, sudo_poll_slice_ms)) {
+            const slice: i32 = @intCast(@min(remaining, sudo_poll_slice_ms));
+            _ = std.posix.poll(&no_fds, slice) catch {};
+            if (sudo_keepalive_stop.load(.acquire)) return;
+        }
+        const code = runner.probe(io, &.{ "sudo", "-n", "-v" }) catch return;
+        if (code != 0) return;
+    }
 }
 
 /// Notifies only when the terminal is not the focused window. Dry runs and
@@ -199,10 +261,13 @@ fn notifyIfUnfocused(
 /// happens where zix can announce it. Passwordless sudo is left untouched.
 fn ensureSudo(io: std.Io, writer: *std.Io.Writer, config: Config, deps: Deps) anyerror!void {
     if (config.dry_run or !sudoNeedsPassword(io, deps)) return;
+    io_mod.programStatus(writer, .blocked_auth, "Waiting for your sudo password");
     io_mod.progressPause(writer);
     defer io_mod.progressResume(writer);
     notifyIfUnfocused(io, writer, config, deps, "zix: sudo password required");
     if (try deps.runner.run(io, &.{ "sudo", "-v" }) != 0) return Error.SudoFailed;
+    startSudoKeepAlive(io, deps.runner, deps.sudo_refresh_interval_ms);
+    io_mod.programStatus(writer, .working, "Credentials ready");
 }
 
 /// True when sudo would have to ask for a password. Read-only and
@@ -255,6 +320,7 @@ fn stage(
     try deps.ui.output(writer, status.stdout);
 
     if (!config.yes and !config.dry_run and config.mutates()) {
+        io_mod.programStatus(writer, .blocked_permission, "Waiting for the staging confirmation");
         notifyIfUnfocused(io, writer, config, deps, "zix: confirmation required");
         if (!(try deps.ui.confirm(
             reader,
@@ -266,6 +332,7 @@ fn stage(
             try deps.ui.output(writer, "Changes not added to stage; aborting.\n");
             return false;
         }
+        io_mod.programStatus(writer, .working, "Staging the changes");
     }
 
     if (try deps.runner.run(io, &commands.git_add) != 0) {
@@ -365,6 +432,7 @@ var probe_error: bool = false;
 var probe_needle: ?[]const u8 = null;
 var probe_needle_code: i32 = 0;
 var sudo_runs: u32 = 0;
+var sudo_refresh_count: u32 = 0;
 var desktop_notifications: u32 = 0;
 var confirm_count: u32 = 0;
 var confirm_false_at: u32 = 0;
@@ -397,6 +465,7 @@ fn resetMocks() void {
     probe_needle = null;
     probe_needle_code = 0;
     sudo_runs = 0;
+    sudo_refresh_count = 0;
     desktop_notifications = 0;
     confirm_count = 0;
     confirm_false_at = 0;
@@ -446,6 +515,11 @@ fn mockProbe(_: ?*anyopaque, _: std.Io, argv: process.Runner.Command) anyerror!i
     if (argv.len > 0 and std.mem.eql(u8, argv[0], "notify-send")) {
         desktop_notifications += 1;
     }
+    if (argv.len >= 3 and std.mem.eql(u8, argv[0], "sudo") and
+        std.mem.eql(u8, argv[1], "-n") and std.mem.eql(u8, argv[2], "-v"))
+    {
+        sudo_refresh_count += 1;
+    }
     if (probe_needle) |needle| {
         if (hasArg(argv, needle)) return probe_needle_code;
     }
@@ -456,6 +530,12 @@ fn mockProbe(_: ?*anyopaque, _: std.Io, argv: process.Runner.Command) anyerror!i
 fn mockTitle(_: *std.Io.Writer, text: []const u8) anyerror!void {
     last_title = text;
 }
+
+const mock_runner = process.Runner{
+    .runFn = mockRun,
+    .captureFn = mockCapture,
+    .probeFn = mockProbe,
+};
 fn mockConfig(_: *std.Io.Writer, _: Config) anyerror!void {}
 fn mockSuccess(_: *std.Io.Writer, msg: []const u8) anyerror!void {
     last_success = msg;
@@ -1049,6 +1129,29 @@ test "execute skips the diff when it is not selected" {
     var buf: [512]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buf);
     try execute(std.testing.io, &writer, config, &commands, testDeps(arena.allocator(), &environ));
+}
+
+test "sudo keep-alive refreshes until stopped" {
+    resetMocks();
+    startSudoKeepAlive(std.testing.io, mock_runner, 1);
+    defer stopSudoKeepAlive();
+
+    var no_fds: [0]std.posix.pollfd = .{};
+    _ = std.posix.poll(&no_fds, 30) catch {};
+    stopSudoKeepAlive();
+    try std.testing.expect(sudo_refresh_count > 0);
+}
+
+test "sudo keep-alive stops when sudo refuses" {
+    resetMocks();
+    probe_result = 1;
+    startSudoKeepAlive(std.testing.io, mock_runner, 1);
+    defer stopSudoKeepAlive();
+
+    var no_fds: [0]std.posix.pollfd = .{};
+    _ = std.posix.poll(&no_fds, 30) catch {};
+    stopSudoKeepAlive();
+    try std.testing.expect(sudo_refresh_count > 0);
 }
 
 test "cleanup has its own title" {
