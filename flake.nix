@@ -13,11 +13,29 @@
         };
         lib = env.pkgs.lib;
 
-        # Arguments shared by the packaged variants. `build.zig.zon` supplies
-        # the pname and version, so they are not repeated here.
+        # build.zig.zon stays the single source of truth, but it is read with
+        # plain Nix instead of letting zig2nix build and run zon2json at eval
+        # time: that import-from-derivation cannot run when cross-evaluating
+        # another architecture (an aarch64 config from an x86_64 machine, for
+        # example). The pinned zigTarget skips zig2nix's `target` IFD too.
+        zonFlat = lib.replaceStrings [ "\n" "\r" ] [ " " " " ] (builtins.readFile ./build.zig.zon);
+        zonField =
+          field: re:
+          let
+            found = builtins.match re zonFlat;
+          in
+          if found == null then
+            throw "flake.nix: build.zig.zon does not declare ${field}"
+          else
+            builtins.head found;
+
+        # Arguments shared by the packaged variants.
         base = {
           src = self;
+          pname = zonField "name" ".*\\.name[[:space:]]*=[[:space:]]*\\.([A-Za-z0-9_]+).*";
+          version = zonField "version" ".*\\.version[[:space:]]*=[[:space:]]*\"([^\"]+)\".*";
           zigPreferMusl = true;
+          zigTarget = "${system}-musl";
           meta = {
             description = "A simple CLI tool to update your NixOS system";
             homepage = "https://github.com/badwatt/zix";
